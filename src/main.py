@@ -2,9 +2,9 @@ import argparse
 from pathlib import Path
 
 try:
-    from .basic_bom_tool import BasicBOMTool
+    from .bom_intelligence import BOMIntelligencePlatform
 except ImportError:
-    from basic_bom_tool import BasicBOMTool
+    from bom_intelligence import BOMIntelligencePlatform
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -14,7 +14,7 @@ DEFAULT_OUTPUT_FILE = BASE_DIR / "output" / "BOM_Intelligence_Report.xlsx"
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Create a basic BOM normalization report."
+        description="Create a BOM intelligence normalization report."
     )
     parser.add_argument(
         "input_file",
@@ -38,16 +38,17 @@ def main():
     if not arguments.input_file.is_file():
         raise FileNotFoundError(f"BOM file not found: {arguments.input_file}")
 
-    tool = BasicBOMTool()
+    tool = BOMIntelligencePlatform()
     reports = tool.analyze_file(arguments.input_file)
     output_file = tool.write_excel_report(reports, arguments.output)
 
     summary = reports["summary"].set_index("Metric")["Value"]
-    print("Basic BOM report completed")
+    print("BOM Intelligence report completed")
     print(f"Input:  {arguments.input_file}")
     print(f"Output: {output_file}")
     print(f"BOM lines: {summary['BOM Lines']}")
-    print(f"Same specification groups: {summary['Same Specification Groups']}")
+    print(f"Duplicate PN groups: {summary['Duplicate PN Groups']}")
+    print(f"Top merge candidates: {summary['Top Merge Candidates']}")
     print(f"Near-value pairs: {summary['Near Value Pairs']}")
 
 

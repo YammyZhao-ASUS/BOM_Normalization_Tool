@@ -39,6 +39,21 @@ DEFAULT_RULES = {
         "near_value_priority": 60,
         "package_priority": 45,
     },
+    "merge_opportunity": {
+        "candidate_quantity_limit": 10,
+        "quantity_score_bands": [
+            {"max_quantity": 2, "score": 100},
+            {"max_quantity": 5, "score": 90},
+            {"max_quantity": 10, "score": 80},
+            {"max_quantity": 20, "score": 60},
+            {"max_quantity": None, "score": 20},
+        ],
+        "score_weights": {
+            "quantity": 0.45,
+            "spec_similarity": 0.40,
+            "engineering_risk": 0.15,
+        },
+    },
     "confidence": {
         "exact_specification": 0.98,
         "structured_attribute": 0.92,

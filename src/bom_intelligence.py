@@ -93,6 +93,7 @@ class BOMIntelligencePlatform:
         "power": ("Power", "Power Rating", "Rated Power"),
         "unit_price": ("Unit Price", "Unit Cost", "Price", "Cost"),
         "lifecycle": ("Lifecycle", "Lifecycle Status", "Part Status", "料件狀態"),
+        "bom_comp_type": ("Comp Type", "BOM Comp Type"),
     }
 
     def __init__(self, near_value_ratio=None, rule_file=None, rule_library=None):
@@ -146,8 +147,10 @@ class BOMIntelligencePlatform:
             raise ValueError("The BOM contains no rows.")
 
         columns = self._resolve_columns(dataframe.columns)
+        project_name = self._project_name_from_dataframe(dataframe, columns)
         normalized_bom = self._normalize_bom(dataframe, columns)
         duplicate_pn = self._find_duplicate_specs(normalized_bom)
+        merge_candidates = self._find_merge_candidates(normalized_bom)
         near_value = self._find_near_values(normalized_bom)
         near_resistance = near_value[near_value["Component_Type"] == "R"].reset_index(drop=True)
         near_capacitance = near_value[near_value["Component_Type"] == "C"].reset_index(drop=True)
@@ -192,12 +195,14 @@ class BOMIntelligencePlatform:
             different_material,
             avl_candidates,
             risk_components,
+            merge_candidates,
         )
 
         return {
             "summary": summary,
-            "report_metadata": self._report_metadata(len(normalized_bom)),
+            "report_metadata": self._report_metadata(len(normalized_bom), project_name),
             "normalized_bom": normalized_bom,
+            "merge_candidates": merge_candidates,
             "duplicate_pn": duplicate_pn,
             "near_value": near_value,
             "near_resistance": near_resistance,
@@ -260,6 +265,7 @@ class BOMIntelligencePlatform:
             supplied_tolerance = self._row_text(row, columns["tolerance"])
             supplied_power = self._row_text(row, columns["power"])
             lifecycle_status = self._row_text(row, columns["lifecycle"])
+            bom_comp_type = self._row_text(row, columns["bom_comp_type"])
             component_text = " ".join(
                 value for value in (component_name, description) if value
             )
@@ -345,6 +351,8 @@ class BOMIntelligencePlatform:
                     "Quantity_Issue": quantity_issue,
                     "Unit_Price": self._numeric_value(row, columns["unit_price"]),
                     "Lifecycle_Status": lifecycle_status,
+                    "BOM_Comp_Type": bom_comp_type,
+                    "Is_Second_Source": bom_comp_type.strip().casefold() == "s",
                     "Is_Critical": is_critical,
                     "Critical_Reason": critical_reason,
                     "Data_Quality_Score": self._data_quality_score(
@@ -375,6 +383,19 @@ class BOMIntelligencePlatform:
             return ""
 
         return re.sub(r"\s+", " ", str(value)).strip()
+
+    @staticmethod
+    def _project_name_from_dataframe(dataframe, columns):
+        description_column = columns.get("description") or columns.get("component_name")
+        if not description_column or dataframe.empty:
+            return ""
+
+        value = dataframe.iloc[0].get(description_column, "")
+        if pd.isna(value):
+            return ""
+
+        text = re.sub(r"\s+", " ", str(value)).strip()
+        return text[:6].upper() if text else ""
 
     @staticmethod
     def _quantity(row, column):
@@ -720,6 +741,217 @@ class BOMIntelligencePlatform:
             group["Group_ID"] = f"DUP-{index:03d}"
 
         return pd.DataFrame(groups, columns=columns)
+
+    def _find_merge_candidates(self, normalized_bom):
+        columns = [
+            "Candidate_ID",
+            "Priority",
+            "Priority_Stars",
+            "Merge_Score",
+            "Quantity_Score",
+            "Spec_Similarity",
+            "Engineering_Risk_Score",
+            "Group_ID",
+            "Component_Type",
+            "Item",
+            "Current_PN",
+            "Current_Qty",
+            "Current_Vendor",
+            "Target_PN",
+            "Target_Qty",
+            "Target_Vendor",
+            "Normalize_Key",
+            "Normalized_Value",
+            "Voltage",
+            "Dielectric",
+            "Tolerance",
+            "Size",
+            "Reason",
+            "Recommendation",
+        ]
+        candidates = normalized_bom[
+            normalized_bom["Component_Type"].isin(["C", "R"])
+            & normalized_bom["Normalize_Key"].ne("")
+            & normalized_bom["Part_Number"].ne("")
+            & ~normalized_bom.get("Is_Second_Source", pd.Series(False, index=normalized_bom.index))
+        ]
+        rows = []
+        candidate_quantity_limit = float(
+            self.rule_library.get(
+                "merge_opportunity",
+                "candidate_quantity_limit",
+                default=10,
+            )
+        )
+
+        for group_index, (_, group) in enumerate(
+            candidates.groupby(["Component_Type", "Normalize_Key"], sort=True),
+            start=1,
+        ):
+            part_groups = self._part_number_merge_groups(group)
+            if len(part_groups) < 2:
+                continue
+
+            target = max(
+                part_groups,
+                key=lambda item: (item["quantity"], item["line_count"], item["part_number"]),
+            )
+
+            for current in part_groups:
+                if current["part_number"] == target["part_number"]:
+                    continue
+                if current["quantity"] > candidate_quantity_limit:
+                    continue
+
+                quantity_score = self._merge_quantity_score(current["quantity"])
+                spec_similarity = self._spec_similarity_score(current["representative"], target["representative"])
+                engineering_risk_score = self._engineering_risk_score(current, target)
+                merge_score = self._merge_score(
+                    quantity_score,
+                    spec_similarity,
+                    engineering_risk_score,
+                )
+                priority, stars = self._merge_priority(merge_score)
+                representative = current["representative"]
+                rows.append(
+                    {
+                        "Priority": priority,
+                        "Priority_Stars": stars,
+                        "Merge_Score": merge_score,
+                        "Quantity_Score": quantity_score,
+                        "Spec_Similarity": spec_similarity,
+                        "Engineering_Risk_Score": engineering_risk_score,
+                        "Group_ID": f"MERGE-G{group_index:03d}",
+                        "Component_Type": representative["Component_Type"],
+                        "Item": current["references"],
+                        "Current_PN": current["part_number"],
+                        "Current_Qty": current["quantity"],
+                        "Current_Vendor": current["vendor"],
+                        "Target_PN": target["part_number"],
+                        "Target_Qty": target["quantity"],
+                        "Target_Vendor": target["vendor"],
+                        "Normalize_Key": representative["Normalize_Key"],
+                        "Normalized_Value": representative["Normalized_Value"],
+                        "Voltage": representative["Voltage"],
+                        "Dielectric": representative["Dielectric"],
+                        "Tolerance": representative["Tolerance"],
+                        "Size": representative["Size"],
+                        "Reason": self._merge_reason(spec_similarity, target["quantity"]),
+                        "Recommendation": f"Merge {current['part_number']} -> {target['part_number']}",
+                    }
+                )
+
+        rows.sort(
+            key=lambda item: (
+                item["Priority"],
+                -item["Merge_Score"],
+                item["Current_Qty"],
+                item["Current_PN"],
+            )
+        )
+        for index, row in enumerate(rows, start=1):
+            row["Candidate_ID"] = f"MERGE-{index:04d}"
+
+        return pd.DataFrame(rows, columns=columns)
+
+    def _part_number_merge_groups(self, group):
+        part_groups = []
+        for part_number, part_group in group.groupby("Part_Number", sort=False):
+            representative = part_group.iloc[0]
+            part_groups.append(
+                {
+                    "part_number": str(part_number),
+                    "quantity": float(part_group["Quantity_Normalized"].sum()),
+                    "line_count": len(part_group),
+                    "vendor": ", ".join(self._unique_text(part_group["Vendor"], case_insensitive=True)),
+                    "references": ", ".join(self._unique_text(part_group["Reference"])),
+                    "critical": bool(part_group["Is_Critical"].any()),
+                    "lifecycle_statuses": self._unique_text(part_group["Lifecycle_Status"]),
+                    "representative": representative,
+                }
+            )
+        return part_groups
+
+    def _merge_quantity_score(self, quantity):
+        bands = self.rule_library.get(
+            "merge_opportunity",
+            "quantity_score_bands",
+            default=[],
+        )
+        for band in bands:
+            if not isinstance(band, dict):
+                continue
+            maximum = band.get("max_quantity")
+            score = band.get("score")
+            if maximum is None or float(quantity) <= float(maximum):
+                return int(score)
+        return 20
+
+    @staticmethod
+    def _spec_similarity_score(current, target):
+        if current["Normalized_Value"] != target["Normalized_Value"]:
+            return 0
+        if current["Package_Identity"] != target["Package_Identity"]:
+            return 40
+        if current["Voltage"] != target["Voltage"]:
+            return 70
+        if current["Tolerance"] != target["Tolerance"]:
+            return 60
+        if str(current["Vendor"]).casefold() != str(target["Vendor"]).casefold():
+            return 95
+        return 100
+
+    @staticmethod
+    def _engineering_risk_score(current, target):
+        if current["critical"] or target["critical"]:
+            return 40
+        lifecycle_text = " ".join(current["lifecycle_statuses"] + target["lifecycle_statuses"]).upper()
+        if any(keyword in lifecycle_text for keyword in ("EOL", "OBSOLETE", "DISCONTINUED", "NRND")):
+            return 70
+        return 100
+
+    def _merge_score(self, quantity_score, spec_similarity, engineering_risk_score):
+        weights = self.rule_library.get(
+            "merge_opportunity",
+            "score_weights",
+            default={},
+        )
+        quantity_weight = float(weights.get("quantity", 0.45))
+        spec_weight = float(weights.get("spec_similarity", 0.40))
+        risk_weight = float(weights.get("engineering_risk", 0.15))
+        total_weight = quantity_weight + spec_weight + risk_weight
+        if total_weight <= 0:
+            return 0
+        score = (
+            quantity_score * quantity_weight
+            + spec_similarity * spec_weight
+            + engineering_risk_score * risk_weight
+        ) / total_weight
+        return round(score, 1)
+
+    @staticmethod
+    def _merge_priority(merge_score):
+        if merge_score >= 95:
+            return "Priority 1", "★★★★★"
+        if merge_score >= 85:
+            return "Priority 2", "★★★★☆"
+        return "Priority 3", "★★★☆☆"
+
+    @staticmethod
+    def _merge_reason(spec_similarity, target_quantity):
+        if spec_similarity == 100:
+            similarity_text = "Exact same specification"
+        elif spec_similarity == 95:
+            similarity_text = "Only vendor is different"
+        elif spec_similarity == 70:
+            similarity_text = "Voltage is different"
+        elif spec_similarity == 60:
+            similarity_text = "Tolerance is different"
+        elif spec_similarity == 40:
+            similarity_text = "Size is different"
+        else:
+            similarity_text = "Value is different"
+        return f"{similarity_text}; target PN already has {target_quantity:g} pcs"
 
     def _find_near_values(self, normalized_bom):
         columns = [
@@ -1154,6 +1386,7 @@ class BOMIntelligencePlatform:
         different_material,
         avl_candidates,
         risk_components,
+        merge_candidates,
     ):
         capacitor_rows = normalized_bom[normalized_bom["Component_Type"] == "C"]
         overall_score = score.loc[score["Metric"] == "Overall Score", "Value"].iloc[0]
@@ -1175,6 +1408,7 @@ class BOMIntelligencePlatform:
                 len(avl_candidates[avl_candidates["AVL_Readiness"] == "Ready for unified AVL"]),
             ),
             ("Cost Down Candidates", len(cost_down)),
+            ("Top Merge Candidates", len(merge_candidates)),
             ("Estimated BOM Savings", round(float(cost_down["Estimated_BOM_Savings"].sum()), 4)),
             ("High Risk Findings", len(risk_components)),
             ("Critical Component Lines", len(critical_parts)),
@@ -1184,10 +1418,11 @@ class BOMIntelligencePlatform:
         ]
         return pd.DataFrame(rows, columns=["Metric", "Value"])
 
-    def _report_metadata(self, row_count):
+    def _report_metadata(self, row_count, project_name=""):
         rows = [
             ("Platform Version", self.VERSION),
             ("Generated UTC", datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            ("Project Name", project_name),
             ("Rule Source", self.rule_library.source),
             ("Rule Schema Version", self.rule_library.get("schema_version")),
             ("Resistor Near-Value Ratio", self.near_value_ratios["R"]),

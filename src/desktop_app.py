@@ -72,10 +72,19 @@ def run_self_test():
             platform.write_excel_report(reports, output_file)
             workbook = load_workbook(output_file, read_only=False, data_only=False)
             try:
-                if len(workbook.sheetnames) != 21:
+                expected_sheets = [
+                    "Dashboard",
+                    "Merge Candidate",
+                    "Specification Summary",
+                    "Specification Detail",
+                    "AVL Candidate",
+                    "Risk Review",
+                    "Settings",
+                ]
+                if workbook.sheetnames != expected_sheets:
                     raise RuntimeError("Self-test workbook sheet count is invalid.")
-                if len(workbook["Dashboard"]._charts) != 3:
-                    raise RuntimeError("Self-test dashboard chart count is invalid.")
+                if workbook["Settings"].sheet_state != "hidden":
+                    raise RuntimeError("Self-test settings sheet visibility is invalid.")
             finally:
                 workbook.close()
         return 0
@@ -109,6 +118,7 @@ class BOMToolApp:
         "Different Voltage Groups",
         "Different Material Groups",
         "Unified AVL Ready",
+        "Top Merge Candidates",
         "Cost Down Candidates",
         "High Risk Findings",
         "Average Data Quality",

@@ -89,26 +89,12 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
         reports = self.platform.analyze_dataframe(self.bom)
         expected_sheets = [
             "Dashboard",
-            "Summary",
-            "Normalized BOM",
-            "Duplicate PN",
-            "Near Resistance",
-            "Near Capacitance",
-            "Near Value",
-            "Different Package",
-            "Different Voltage",
-            "Different Material",
-            "AVL Candidates",
-            "Cost Down Candidate",
-            "Risk Components",
-            "AI Rule Findings",
-            "Review Needed",
-            "Vendor Distribution",
-            "Statistics",
-            "Critical Parts",
-            "BOM Score",
-            "Rule Library",
-            "Report Metadata",
+            "Merge Candidate",
+            "Specification Summary",
+            "Specification Detail",
+            "AVL Candidate",
+            "Risk Review",
+            "Settings",
         ]
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -116,10 +102,127 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.platform.write_excel_report(reports, output_file)
             workbook = load_workbook(output_file, read_only=False)
             self.assertEqual(workbook.sheetnames, expected_sheets)
-            self.assertEqual(len(workbook["Dashboard"]._charts), 3)
-            self.assertEqual(workbook["Normalized BOM"].freeze_panes, "A2")
-            self.assertEqual(len(workbook["Normalized BOM"].tables), 1)
+            self.assertEqual(workbook["Dashboard"]["A1"].value, "PN Optimization Dashboard")
+            self.assertEqual(workbook["Settings"].sheet_state, "hidden")
+            self.assertEqual(workbook["Merge Candidate"].freeze_panes, "A2")
+            self.assertEqual(workbook["Specification Summary"].freeze_panes, "A2")
+            self.assertEqual(workbook["Specification Detail"].freeze_panes, "A2")
+            merge_headers = [cell.value for cell in workbook["Merge Candidate"][1]]
+            summary_headers = [cell.value for cell in workbook["Specification Summary"][1]]
+            detail_headers = [cell.value for cell in workbook["Specification Detail"][1]]
+            self.assertEqual(
+                merge_headers[:8],
+                [
+                    "Priority",
+                    "Merge Difficulty",
+                    "Difference",
+                    "Spec",
+                    "Current PN",
+                    "Current Qty",
+                    "Target PN",
+                    "Target Qty",
+                ],
+            )
+            self.assertEqual(summary_headers[:9], ["Value", "Spec Detail", "PN Count", "Total Qty", "Target PN", "Priority", "Reason", "Detail", "Group"])
+            self.assertEqual(detail_headers[:9], ["Group", "Row Type", "Merge Tree", "PN", "Qty", "Qty Share", "Difference", "Can Merge", "Reason"])
+            self.assertTrue(workbook["Specification Summary"].column_dimensions["I"].hidden)
+            self.assertIsNotNone(workbook["Specification Summary"]["H2"].hyperlink)
             workbook.close()
+
+    def test_merge_candidates_rank_low_quantity_pns_to_target_pn(self):
+        bom = pd.DataFrame(
+            [
+                {
+                    "Part Number": "R-TARGET",
+                    "Part Reference": "R102",
+                    "Component_Name": "RES 10K 1/16W 0402 1% THICK FILM",
+                    "Vendor": "Yageo",
+                    "Quantity": 128,
+                },
+                {
+                    "Part Number": "R-LOW-1",
+                    "Part Reference": "R153",
+                    "Component_Name": "RES 10K 1/16W 0402 1% THICK FILM",
+                    "Vendor": "Yageo",
+                    "Quantity": 2,
+                },
+                {
+                    "Part Number": "R-LOW-2",
+                    "Part Reference": "R608",
+                    "Component_Name": "RES 10K 1/16W 0402 1% THICK FILM",
+                    "Vendor": "Vishay",
+                    "Quantity": 5,
+                },
+                {
+                    "Part Number": "R-LATER",
+                    "Part Reference": "R777",
+                    "Component_Name": "RES 10K 1/16W 0402 1% THICK FILM",
+                    "Vendor": "Yageo",
+                    "Quantity": 17,
+                },
+            ]
+        )
+
+        merge_candidates = self.platform.analyze_dataframe(bom)["merge_candidates"]
+
+        self.assertEqual(merge_candidates["Current_PN"].tolist(), ["R-LOW-1", "R-LOW-2"])
+        self.assertTrue((merge_candidates["Target_PN"] == "R-TARGET").all())
+        self.assertEqual(merge_candidates.iloc[0]["Priority"], "Priority 1")
+        self.assertEqual(merge_candidates.iloc[0]["Priority_Stars"], "★★★★★")
+        self.assertEqual(merge_candidates.iloc[0]["Quantity_Score"], 100)
+        self.assertEqual(merge_candidates.iloc[1]["Spec_Similarity"], 95)
+
+    def test_merge_candidates_ignore_second_source_rows(self):
+        bom = pd.DataFrame(
+            [
+                {
+                    "Part Number": "R-TARGET",
+                    "Part Reference": "R1",
+                    "Item Description": "RES 10K 1/16W 0402 1% THICK FILM",
+                    "Comp Type": "",
+                    "Quantity": 100,
+                },
+                {
+                    "Part Number": "R-SECOND-SOURCE",
+                    "Part Reference": "R1-S",
+                    "Item Description": "RES 10K 1/16W 0402 1% THICK FILM",
+                    "Comp Type": "S",
+                    "Quantity": 1,
+                },
+                {
+                    "Part Number": "R-MAIN-LOW",
+                    "Part Reference": "R2",
+                    "Item Description": "RES 10K 1/16W 0402 1% THICK FILM",
+                    "Comp Type": "",
+                    "Quantity": 2,
+                },
+            ]
+        )
+
+        reports = self.platform.analyze_dataframe(bom)
+        merge_candidates = reports["merge_candidates"]
+
+        self.assertEqual(merge_candidates["Current_PN"].tolist(), ["R-MAIN-LOW"])
+        self.assertNotIn("R-SECOND-SOURCE", merge_candidates["Current_PN"].tolist())
+        normalized = reports["normalized_bom"].set_index("Part_Number")
+        self.assertTrue(normalized.loc["R-SECOND-SOURCE", "Is_Second_Source"])
+
+    def test_project_name_uses_first_item_description_prefix(self):
+        bom = pd.DataFrame(
+            [
+                {
+                    "Part Number": "ASM",
+                    "Part Reference": "",
+                    "Item Description": "P500MV MAIN BD MODULE//MECHANICAL",
+                    "Quantity": 1,
+                }
+            ]
+        )
+
+        reports = self.platform.analyze_dataframe(bom)
+        metadata = reports["report_metadata"].set_index("Property")["Value"]
+
+        self.assertEqual(metadata["Project Name"], "P500MV")
 
     def test_finds_variants_avl_cost_and_risk_opportunities(self):
         rows = [
@@ -170,19 +273,21 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             output_file = Path(temporary_directory) / "safe_report.xlsx"
             self.platform.write_excel_report(reports, output_file)
             workbook = load_workbook(output_file, data_only=False)
-            worksheet = workbook["Normalized BOM"]
-            headers = [cell.value for cell in worksheet[1]]
-            part_number_column = headers.index("Part_Number") + 1
-            cell = worksheet.cell(2, part_number_column)
-            self.assertEqual(cell.data_type, "s")
-            self.assertTrue(str(cell.value).startswith("'="))
-            formula_header = next(
+            formula_like_cells = [
                 cell
-                for cell in worksheet[1]
-                if "HYPERLINK" in str(cell.value)
+                for worksheet in workbook.worksheets
+                for row in worksheet.iter_rows()
+                for cell in row
+                if isinstance(cell.value, str) and "=1+1" in cell.value
+            ]
+            self.assertTrue(formula_like_cells)
+            self.assertTrue(
+                all(
+                    str(cell.value).startswith("'")
+                    for cell in formula_like_cells
+                    if str(cell.value).lstrip("\t\r\n\ufeff").startswith("=1+1")
+                )
             )
-            self.assertEqual(formula_header.data_type, "s")
-            self.assertTrue(str(formula_header.value).startswith("'="))
             workbook.close()
 
     def test_description_only_signal_context_is_protected(self):

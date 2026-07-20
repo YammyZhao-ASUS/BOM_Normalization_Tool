@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "analysis": {
+    "near_value_ratio": {
+      "R": 2.2,
+      "C": 2.2
+    },
+    "voltage_ratio_limit": 4.0,
+    "minimum_complete_spec_fields": 4
+  },
+  "risk": {
+    "lifecycle_keywords": [
+      "EOL",
+      "OBSOLETE",
+      "DISCONTINUED",
+      "NRND",
+      "NOT RECOMMENDED",
+      "LAST TIME BUY"
+    ],
+    "single_source_vendor_limit": 1,
+    "high_fragmentation_pn_count": 3,
+    "unknown_vendor_is_risk": true,
+    "missing_part_number_is_risk": true
+  },
+  "avl": {
+    "minimum_vendors": 2,
+    "approved_vendors": [],
+    "blocked_vendors": []
+  },
+  "cost_down": {
+    "minimum_impact_quantity": 1,
+    "same_spec_priority": 90,
+    "near_value_priority": 60,
+    "package_priority": 45
+  },
+  "confidence": {
+    "exact_specification": 0.98,
+    "structured_attribute": 0.92,
+    "near_value": 0.82,
+    "keyword_risk": 0.88,
+    "missing_data": 0.99
+  },
+  "custom_rules": [
+    {
+      "id": "ORG-001",
+      "enabled": false,
+      "field": "Lifecycle_Status",
+      "operator": "equals_any",
+      "values": [
+        "Conditional",
+        "Restricted"
+      ],
+      "component_types": [],
+      "severity": "High",
+      "confidence": 0.95,
+      "finding": "Component is restricted by the organization lifecycle policy",
+      "recommendation": "Obtain sourcing approval or qualify a replacement."
+    }
+  ]
+}

@@ -133,18 +133,19 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
                     "BOM Qty",
                 ],
             )
-            self.assertEqual(summary_headers[:9], ["Merge ID", "Review Item", "BOM Qty", "Keep Qty", "Merge Qty", "Priority", "Why Review", "RD Decision", "Detail"])
-            self.assertEqual(detail_headers[:11], ["Merge ID", "Keep PN", "Merge PN", "Keep Qty", "Merge Qty", "Difference", "Vendor", "Package", "Voltage", "Material", "RD Decision"])
-            self.assertEqual(resistor_summary_headers[:9], ["Value", "PN Count", "Total Qty", "Action / Target PN", "Priority", "Reason (相似度分类)", "Detail", "Group", "RD Decision"])
+            self.assertEqual(summary_headers[:9], ["Merge ID", "Review Item", "BOM Qty", "Keep Qty", "Merge Qty", "Priority", "Why Review", "BOM Action", "Detail"])
+            self.assertEqual(detail_headers[:12], ["Merge ID", "Keep PN", "Merge PN", "Keep Qty", "Merge Qty", "Affected RefDes", "Estimated Modification", "Difference", "Package", "Voltage", "Material", "BOM Action"])
+            self.assertNotIn("Vendor", detail_headers)
+            self.assertEqual(resistor_summary_headers[:8], ["Value", "PN Count", "Total Qty", "Action / Target PN", "Priority", "Reason (相似度分类)", "Detail", "Group"])
             self.assertEqual(resistor_detail_headers[:9], ["Group", "Row Type", "Value", "Spec", "PN", "Qty", "Status", "Difference", "Why Listed"])
             self.assertEqual(nearby_headers[:8], ["Current Value", "Current BOM Qty", "Nearby Value", "Candidate Qty", "Difference", "Tolerance Band", "Family", "Candidate PNs"])
             self.assertNotIn("Recommendation", nearby_headers)
             self.assertIsNotNone(workbook["Capacitor Summary"]["I2"].hyperlink)
             self.assertIn("VLOOKUP", str(workbook["Capacitor Summary"]["H2"].value))
             self.assertTrue(workbook["Resistor Summary"].column_dimensions["H"].hidden)
-            self.assertFalse(self._has_data_validation(workbook["Resistor Summary"], "I2:I1048576"))
+            self.assertNotIn("RD Decision", resistor_summary_headers)
             self.assertFalse(self._has_data_validation(workbook["Capacitor Summary"], "H2:H1048576"))
-            self.assertTrue(self._has_data_validation(workbook["Merge Workspace"], "K2:K1048576"))
+            self.assertTrue(self._has_data_validation(workbook["Merge Workspace"], "L2:L1048576"))
             workbook.close()
 
     @staticmethod
@@ -181,7 +182,7 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             workbook = load_workbook(output_file, read_only=False)
             detail = workbook["Merge Workspace"]
             rows = [
-                [detail.cell(row_index, column).value for column in range(1, 12)]
+                [detail.cell(row_index, column).value for column in range(1, 13)]
                 for row_index in range(2, detail.max_row + 1)
                 if detail.cell(row_index, 1).value
             ]
@@ -193,9 +194,11 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.assertEqual(keep_rows[0][3], 148)
             self.assertEqual(merge_rows[0][2], "C-X6S-LOW")
             self.assertEqual(merge_rows[0][4], 60)
-            self.assertIn("TDK → Murata", merge_rows[0][6])
-            self.assertIn("X6S → X5R", merge_rows[0][9])
-            self.assertIn(merge_rows[0][10], ("", None))
+            self.assertEqual(merge_rows[0][5], "C11")
+            self.assertEqual(merge_rows[0][6], "Update 1 RefDes")
+            self.assertIn("Vendor\nTDK → Murata", merge_rows[0][7])
+            self.assertIn("X6S → X5R", merge_rows[0][10])
+            self.assertIn(merge_rows[0][11], ("", None))
             self.assertEqual(float(keep_rows[0][3]) + float(merge_rows[0][4]), 208)
             workbook.close()
 

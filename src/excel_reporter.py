@@ -136,7 +136,7 @@ class ExcelReportWriter:
         return pd.DataFrame(rows, columns=columns)
 
     def _specification_summary_view(self, reports):
-        columns = ["Merge ID", "Review Item", "BOM Qty", "Keep Qty", "Merge Qty", "Priority", "Why Review", "RD Decision", "Detail"]
+        columns = ["Merge ID", "Review Item", "BOM Qty", "Keep Qty", "Merge Qty", "Priority", "Why Review", "BOM Action", "Detail"]
         rows = []
         merge_groups = self._merge_tree_groups(reports, component_type="C")
         assigned_parts = {}
@@ -152,7 +152,7 @@ class ExcelReportWriter:
                     "Merge Qty": merge_quantity,
                     "Priority": group["potential"],
                     "Why Review": group["summary_reason"],
-                    "RD Decision": "",
+                    "BOM Action": "",
                     "Detail": "Open",
                 }
             )
@@ -177,12 +177,13 @@ class ExcelReportWriter:
             "Merge PN",
             "Keep Qty",
             "Merge Qty",
+            "Affected RefDes",
+            "Estimated Modification",
             "Difference",
-            "Vendor",
             "Package",
             "Voltage",
             "Material",
-            "RD Decision",
+            "BOM Action",
         ]
         rows = []
         assigned_parts = {}
@@ -198,7 +199,7 @@ class ExcelReportWriter:
         return pd.DataFrame(rows, columns=columns)
 
     def _resistor_summary_view(self, reports):
-        columns = ["Value", "PN Count", "Total Qty", "Action / Target PN", "Priority", "Reason (相似度分类)", "Detail", "Group", "RD Decision"]
+        columns = ["Value", "PN Count", "Total Qty", "Action / Target PN", "Priority", "Reason (相似度分类)", "Detail", "Group"]
         rows = []
         for group in self._resistor_value_groups(reports):
             rows.append(
@@ -211,7 +212,6 @@ class ExcelReportWriter:
                     "Reason (相似度分类)": group["reason"],
                     "Detail": "▶ Detail",
                     "Group": group["group_id"],
-                    "RD Decision": "⏳ 待处理 (Pending)",
                 }
             )
         return pd.DataFrame(rows, columns=columns)
@@ -574,6 +574,7 @@ class ExcelReportWriter:
                     "part_number": str(part_number),
                     "quantity": float(part_group["Quantity_Normalized"].sum()),
                     "line_count": len(part_group),
+                    "references": self._reference_list(part_group.get("Reference", pd.Series(dtype=object))),
                     "vendor": ", ".join(self._unique_text(part_group.get("Vendor", pd.Series(dtype=object)), case_insensitive=True)),
                     "representative": representative,
                 }
@@ -649,7 +650,7 @@ class ExcelReportWriter:
                         "Merge Qty": merge_quantity,
                         "Priority": status,
                         "Why Review": reason,
-                        "RD Decision": "",
+                        "BOM Action": "",
                         "Detail": "Open",
                     }
                 )
@@ -665,12 +666,13 @@ class ExcelReportWriter:
             "Merge PN",
             "Keep Qty",
             "Merge Qty",
+            "Affected RefDes",
+            "Estimated Modification",
             "Difference",
-            "Vendor",
             "Package",
             "Voltage",
             "Material",
-            "RD Decision",
+            "BOM Action",
         ]
         group_index = start_index
         normalized = reports.get("normalized_bom", pd.DataFrame())
@@ -745,13 +747,44 @@ class ExcelReportWriter:
             "Merge PN": merge_part["part_number"] if merge_part else "",
             "Keep Qty": keep_part["quantity"],
             "Merge Qty": merge_part["quantity"] if merge_part else "",
+            "Affected RefDes": "\n".join(merge_part.get("references", [])) if merge_part else "",
+            "Estimated Modification": self._estimated_modification(merge_part) if merge_part else "",
             "Difference": difference,
-            "Vendor": self._direction_text(merge_row.get("Vendor", ""), keep_row.get("Vendor", "")) if merge_part else keep_row.get("Vendor", ""),
             "Package": self._direction_text(merge_row.get("Package_Identity", ""), keep_row.get("Package_Identity", "")) if merge_part else keep_row.get("Package_Identity", ""),
             "Voltage": self._direction_text(merge_row.get("Voltage", ""), keep_row.get("Voltage", "")) if merge_part else keep_row.get("Voltage", ""),
             "Material": self._direction_text(merge_row.get("Dielectric", ""), keep_row.get("Dielectric", "")) if merge_part else keep_row.get("Dielectric", ""),
-            "RD Decision": "" if merge_part else "",
+            "BOM Action": "" if merge_part else "",
         }
+
+    @staticmethod
+    def _reference_list(series):
+        """Return sorted RefDes values for the PN rows that would be modified."""
+        references = []
+        for value in series:
+            text = "" if pd.isna(value) else str(value).strip()
+            if not text:
+                continue
+            for reference in re.split(r"[,;\s]+", text):
+                if reference and reference not in references:
+                    references.append(reference)
+        return sorted(references, key=ExcelReportWriter._reference_sort_key)
+
+    @staticmethod
+    def _reference_sort_key(reference):
+        """Sort RefDes naturally by prefix and numeric suffix."""
+        match = re.match(r"^([A-Za-z]+)(\d+)(.*)$", str(reference))
+        if not match:
+            return (str(reference), 0, "")
+        return (match.group(1), int(match.group(2)), match.group(3))
+
+    @staticmethod
+    def _estimated_modification(part):
+        """Describe the practical BOM/PCB edits implied by a merge candidate."""
+        if not part:
+            return ""
+        references = part.get("references", []) if part else []
+        count = len(references) or int(float(part.get("quantity", 0) or 0))
+        return f"Update {count:g} RefDes" if count else ""
 
     @staticmethod
     def _review_quantities(keep_part, merge_parts):
@@ -1101,7 +1134,7 @@ class ExcelReportWriter:
                 cell.fill = PatternFill("solid", fgColor=self.COLORS["navy"])
 
         worksheet.merge_cells("A3:H3")
-        worksheet["A3"] = "Global health check: Dashboard shows scope; Summary queues review; RD records decisions in Merge Workspace."
+        worksheet["A3"] = "Global health check: Dashboard shows scope; Summary queues review; RD records BOM Action in Merge Workspace."
         worksheet["A3"].font = Font(name="Aptos", size=11, color=self.COLORS["muted"])
         worksheet["A3"].alignment = Alignment(vertical="center")
 
@@ -1547,19 +1580,19 @@ class ExcelReportWriter:
             cell.style = "Hyperlink"
 
     def _sync_summary_from_workspace(self, workbook):
-        """Make Summary decision read from Merge Workspace by Merge ID."""
+        """Make Summary BOM Action read from Merge Workspace by Merge ID."""
         if "Capacitor Summary" not in workbook or "Merge Workspace" not in workbook:
             return
         summary = workbook["Capacitor Summary"]
         summary_headers = [cell.value for cell in summary[1]]
         try:
             merge_id_column = summary_headers.index("Merge ID") + 1
-            decision_column = summary_headers.index("RD Decision") + 1
+            action_column = summary_headers.index("BOM Action") + 1
         except ValueError:
             return
         for row_index in range(2, summary.max_row + 1):
             merge_id_cell = summary.cell(row_index, merge_id_column).coordinate
-            summary.cell(row_index, decision_column).value = f'=IFERROR(IF(VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$K,11,FALSE)="","Pending",VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$K,11,FALSE)),"Pending")'
+            summary.cell(row_index, action_column).value = f'=IFERROR(IF(VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$L,12,FALSE)="","Pending",VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$L,12,FALSE)),"Pending")'
 
     def _link_resistor_summary_to_detail(self, workbook):
         if "Resistor Summary" not in workbook or "Resistor Detail" not in workbook:
@@ -1587,20 +1620,20 @@ class ExcelReportWriter:
             cell.style = "Hyperlink"
 
     def _add_rd_decision_dropdowns(self, workbook):
-        decision_options = "Merge,Keep,Skip"
+        action_options = "Update BOM,No Change,Investigate"
         for sheet_name in ("Merge Workspace",):
             if sheet_name not in workbook:
                 continue
             worksheet = workbook[sheet_name]
             headers = [cell.value for cell in worksheet[1]]
-            if "RD Decision" not in headers:
+            if "BOM Action" not in headers:
                 continue
-            column_letter = worksheet.cell(1, headers.index("RD Decision") + 1).column_letter
-            validation = DataValidation(type="list", formula1=f'"{decision_options}"', allow_blank=True)
-            validation.error = "Please choose Merge, Keep, or Skip."
-            validation.errorTitle = "Invalid RD Decision"
-            validation.prompt = "Select the engineering decision for this merge row."
-            validation.promptTitle = "RD Decision"
+            column_letter = worksheet.cell(1, headers.index("BOM Action") + 1).column_letter
+            validation = DataValidation(type="list", formula1=f'"{action_options}"', allow_blank=True)
+            validation.error = "Please choose Update BOM, No Change, or Investigate."
+            validation.errorTitle = "Invalid BOM Action"
+            validation.prompt = "Select the BOM action for this merge row."
+            validation.promptTitle = "BOM Action"
             worksheet.add_data_validation(validation)
             validation.add(f"{column_letter}2:{column_letter}1048576")
 
@@ -1658,7 +1691,7 @@ class ExcelReportWriter:
             "Merge Qty": 10,
             "Priority": 12,
             "Why Review": 32,
-            "RD Decision": 14,
+            "BOM Action": 18,
             "Detail": 10,
         }
         for header, width in widths.items():
@@ -1704,12 +1737,13 @@ class ExcelReportWriter:
             "Merge PN": 18,
             "Keep Qty": 10,
             "Merge Qty": 10,
+            "Affected RefDes": 22,
+            "Estimated Modification": 20,
             "Difference": 28,
-            "Vendor": 18,
             "Package": 18,
             "Voltage": 16,
             "Material": 16,
-            "RD Decision": 14,
+            "BOM Action": 18,
         }
         for header, width in widths.items():
             if header in headers:
@@ -1730,7 +1764,6 @@ class ExcelReportWriter:
             "Priority": 12,
             "Reason (相似度分类)": 32,
             "Detail": 12,
-            "RD Decision": 22,
         }
         for header, width in widths.items():
             if header in headers:

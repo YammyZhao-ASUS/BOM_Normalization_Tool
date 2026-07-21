@@ -91,12 +91,12 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             "Overview",
             "Merge Candidate",
             "Capacitor Summary",
-            "Capacitor Detail",
+            "Merge Workspace",
             "Resistor Summary",
             "Resistor Detail",
             "AVL Candidate",
             "Risk Review",
-            "Nearby Value",
+            "Resistor Nearby Value",
             "Settings",
         ]
 
@@ -109,40 +109,42 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.assertEqual(workbook["Settings"].sheet_state, "hidden")
             self.assertEqual(workbook["Merge Candidate"].freeze_panes, "A2")
             self.assertEqual(workbook["Capacitor Summary"].freeze_panes, "A2")
-            self.assertEqual(workbook["Capacitor Detail"].freeze_panes, "A2")
+            self.assertEqual(workbook["Merge Workspace"].freeze_panes, "A2")
             self.assertEqual(workbook["Resistor Summary"].freeze_panes, "A2")
             self.assertEqual(workbook["Resistor Detail"].freeze_panes, "A2")
-            self.assertEqual(workbook["Nearby Value"].freeze_panes, "A2")
+            self.assertEqual(workbook["Resistor Nearby Value"].freeze_panes, "A2")
             merge_headers = [cell.value for cell in workbook["Merge Candidate"][1]]
             summary_headers = [cell.value for cell in workbook["Capacitor Summary"][1]]
-            detail_headers = [cell.value for cell in workbook["Capacitor Detail"][1]]
+            detail_headers = [cell.value for cell in workbook["Merge Workspace"][1]]
             resistor_summary_headers = [cell.value for cell in workbook["Resistor Summary"][1]]
             resistor_detail_headers = [cell.value for cell in workbook["Resistor Detail"][1]]
-            nearby_headers = [cell.value for cell in workbook["Nearby Value"][1]]
+            nearby_headers = [cell.value for cell in workbook["Resistor Nearby Value"][1]]
             self.assertEqual(
-                merge_headers[:8],
+                merge_headers[:9],
                 [
                     "Priority",
                     "Merge Difficulty",
                     "Difference",
                     "Spec",
-                    "Current PN",
-                    "Current Qty",
-                    "Target PN",
-                    "Target Qty",
+                    "Merge PN",
+                    "Merge Qty",
+                    "Keep PN",
+                    "Keep Qty",
+                    "BOM Qty",
                 ],
             )
-            self.assertEqual(summary_headers[:10], ["Value", "Spec Detail", "PN Count", "Total Qty", "Target PN", "Priority", "Reason", "Detail", "Group", "RD Decision"])
-            self.assertEqual(detail_headers[:13], ["Group", "Row Type", "Spec", "Member PN", "Vendor", "Member Spec", "Member Qty", "Qty Share", "Target PN", "Target Qty", "Target Feature", "Difference Type", "Reason"])
+            self.assertEqual(summary_headers[:9], ["Merge ID", "Review Item", "BOM Qty", "Keep Qty", "Merge Qty", "Priority", "Why Review", "RD Decision", "Detail"])
+            self.assertEqual(detail_headers[:11], ["Merge ID", "Keep PN", "Merge PN", "Keep Qty", "Merge Qty", "Difference", "Vendor", "Package", "Voltage", "Material", "RD Decision"])
             self.assertEqual(resistor_summary_headers[:9], ["Value", "PN Count", "Total Qty", "Action / Target PN", "Priority", "Reason (相似度分类)", "Detail", "Group", "RD Decision"])
             self.assertEqual(resistor_detail_headers[:9], ["Group", "Row Type", "Value", "Spec", "PN", "Qty", "Status", "Difference", "Why Listed"])
-            self.assertEqual(nearby_headers[:5], ["Current", "Nearby", "Difference", "Family", "PNs"])
+            self.assertEqual(nearby_headers[:8], ["Current Value", "Current BOM Qty", "Nearby Value", "Candidate Qty", "Difference", "Tolerance Band", "Family", "Candidate PNs"])
             self.assertNotIn("Recommendation", nearby_headers)
-            self.assertTrue(workbook["Capacitor Summary"].column_dimensions["I"].hidden)
-            self.assertIsNotNone(workbook["Capacitor Summary"]["H2"].hyperlink)
+            self.assertIsNotNone(workbook["Capacitor Summary"]["I2"].hyperlink)
+            self.assertIn("VLOOKUP", str(workbook["Capacitor Summary"]["H2"].value))
             self.assertTrue(workbook["Resistor Summary"].column_dimensions["H"].hidden)
-            self.assertTrue(self._has_data_validation(workbook["Capacitor Summary"], "J2:J1048576"))
-            self.assertTrue(self._has_data_validation(workbook["Resistor Summary"], "I2:I1048576"))
+            self.assertFalse(self._has_data_validation(workbook["Resistor Summary"], "I2:I1048576"))
+            self.assertFalse(self._has_data_validation(workbook["Capacitor Summary"], "H2:H1048576"))
+            self.assertTrue(self._has_data_validation(workbook["Merge Workspace"], "K2:K1048576"))
             workbook.close()
 
     @staticmethod
@@ -177,25 +179,24 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             output_file = Path(temporary_directory) / "capacitor_review.xlsx"
             self.platform.write_excel_report(reports, output_file)
             workbook = load_workbook(output_file, read_only=False)
-            detail = workbook["Capacitor Detail"]
+            detail = workbook["Merge Workspace"]
             rows = [
-                [detail.cell(row_index, column).value for column in range(1, 14)]
+                [detail.cell(row_index, column).value for column in range(1, 12)]
                 for row_index in range(2, detail.max_row + 1)
-                if detail.cell(row_index, 2).value
+                if detail.cell(row_index, 1).value
             ]
-            review_rows = [row for row in rows if row[1] == "Review Required"]
-            member_rows = [row for row in rows if row[1] in {"Target PN", "Member PN"}]
+            keep_rows = [row for row in rows if not row[2]]
+            merge_rows = [row for row in rows if row[2]]
 
-            self.assertEqual(len(review_rows), 1)
-            self.assertIn("X5R: 148 pcs (71%)", review_rows[0][2])
-            self.assertIn("X6S: 60 pcs (29%)", review_rows[0][2])
-            self.assertEqual(review_rows[0][8], "C-X5R-TARGET")
-            self.assertEqual(review_rows[0][9], 148)
-            self.assertEqual(review_rows[0][10], "X5R")
-            self.assertIn("➔ X5R", review_rows[0][11])
-            self.assertIn("🟡 Tolerance 20% ➔ 10%", review_rows[0][11])
-            self.assertEqual({row[3] for row in member_rows}, {"C-X5R-TARGET", "C-X6S-LOW"})
-            self.assertEqual(len([row[3] for row in member_rows]), len({row[3] for row in member_rows}))
+            self.assertEqual(keep_rows[0][0], "M-001")
+            self.assertEqual(keep_rows[0][1], "C-X5R-TARGET")
+            self.assertEqual(keep_rows[0][3], 148)
+            self.assertEqual(merge_rows[0][2], "C-X6S-LOW")
+            self.assertEqual(merge_rows[0][4], 60)
+            self.assertIn("TDK → Murata", merge_rows[0][6])
+            self.assertIn("X6S → X5R", merge_rows[0][9])
+            self.assertIn(merge_rows[0][10], ("", None))
+            self.assertEqual(float(keep_rows[0][3]) + float(merge_rows[0][4]), 208)
             workbook.close()
 
     def test_resistor_pages_are_qty_first_grouped_and_explain_why_listed(self):
@@ -262,7 +263,7 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             workbook = load_workbook(output_file, read_only=False)
             summary = workbook["Resistor Summary"]
             detail = workbook["Resistor Detail"]
-            nearby = workbook["Nearby Value"]
+            nearby = workbook["Resistor Nearby Value"]
             summary_rows = {
                 summary.cell(row_index, 1).value: [summary.cell(row_index, column).value for column in range(1, 9)]
                 for row_index in range(2, summary.max_row + 1)
@@ -294,7 +295,14 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.assertIn("10.2kΩ", ten_k_header[7])
             self.assertIn("9.9kΩ", ten_k_header[7])
             self.assertNotIn("9.76kΩ", ten_k_header[7])
-            self.assertEqual([cell.value for cell in nearby[1]], ["Current", "Nearby", "Difference", "Family", "PNs"])
+            self.assertEqual([cell.value for cell in nearby[1]], ["Current Value", "Current BOM Qty", "Nearby Value", "Candidate Qty", "Difference", "Tolerance Band", "Family", "Candidate PNs"])
+            nearby_rows = [
+                [nearby.cell(row_index, column).value for column in range(1, 9)]
+                for row_index in range(2, nearby.max_row + 1)
+            ]
+            self.assertTrue(any(row[0] == "10kOhm" and row[2] == "10.2kOhm" and row[3] == 20 for row in nearby_rows))
+            self.assertTrue(all(abs(float(str(row[4]).replace("%", "").replace("'", ""))) <= 10 for row in nearby_rows if row[4]))
+            self.assertFalse(any(row[0] == "1.21kOhm" and row[2] == "2.2kOhm" for row in nearby_rows))
             self.assertNotIn("Recommendation", [cell.value for cell in nearby[1]])
             workbook.close()
 

@@ -17,12 +17,12 @@ class ExcelReportWriter:
     SHEETS = (
         ("Merge Candidate", "merge_candidates"),
         ("Capacitor Summary", "specification_summary"),
-        ("Capacitor Detail", "specification_detail"),
+        ("Merge Workspace", "specification_detail"),
         ("Resistor Summary", "resistor_summary"),
         ("Resistor Detail", "resistor_detail"),
         ("AVL Candidate", "avl_candidate"),
         ("Risk Review", "risk_review"),
-        ("Nearby Value", "nearby_value"),
+        ("Resistor Nearby Value", "nearby_value"),
         ("Settings", "settings"),
     )
 
@@ -65,6 +65,7 @@ class ExcelReportWriter:
 
                 self._link_summary_to_detail(workbook)
                 self._link_resistor_summary_to_detail(workbook)
+                self._sync_summary_from_workspace(workbook)
                 self._add_rd_decision_dropdowns(workbook)
                 self._build_dashboard(overview, reports, report_views)
 
@@ -98,10 +99,11 @@ class ExcelReportWriter:
             "Merge Difficulty",
             "Difference",
             "Spec",
-            "Current PN",
-            "Current Qty",
-            "Target PN",
-            "Target Qty",
+            "Merge PN",
+            "Merge Qty",
+            "Keep PN",
+            "Keep Qty",
+            "BOM Qty",
             "Reference Count",
             "Reason",
             "Action",
@@ -119,10 +121,11 @@ class ExcelReportWriter:
                     "Merge Difficulty": self._difficulty_label(candidate.get("Spec_Similarity", 0)),
                     "Difference": difference,
                     "Spec": self._compact_spec(candidate),
-                    "Current PN": candidate.get("Current_PN", ""),
-                    "Current Qty": candidate.get("Current_Qty", 0),
-                    "Target PN": candidate.get("Target_PN", ""),
-                    "Target Qty": candidate.get("Target_Qty", 0),
+                    "Merge PN": candidate.get("Current_PN", ""),
+                    "Merge Qty": candidate.get("Current_Qty", 0),
+                    "Keep PN": candidate.get("Target_PN", ""),
+                    "Keep Qty": candidate.get("Target_Qty", 0),
+                    "BOM Qty": float(candidate.get("Current_Qty", 0) or 0) + float(candidate.get("Target_Qty", 0) or 0),
                     "Reference Count": self._reference_count(candidate.get("Item", "")),
                     "Reason": candidate.get("Reason", ""),
                     "Action": candidate.get("Recommendation", ""),
@@ -133,113 +136,65 @@ class ExcelReportWriter:
         return pd.DataFrame(rows, columns=columns)
 
     def _specification_summary_view(self, reports):
-        columns = ["Value", "Spec Detail", "PN Count", "Total Qty", "Target PN", "Priority", "Reason", "Detail", "Group", "RD Decision"]
+        columns = ["Merge ID", "Review Item", "BOM Qty", "Keep Qty", "Merge Qty", "Priority", "Why Review", "RD Decision", "Detail"]
         rows = []
-        for group in self._merge_tree_groups(reports, component_type="C"):
+        merge_groups = self._merge_tree_groups(reports, component_type="C")
+        assigned_parts = {}
+        for group in merge_groups:
+            self._assign_bucket_parts(assigned_parts, group["group_id"], [group["target"], *group["candidates"]])
+            keep_quantity, merge_quantity = self._review_quantities(group["target"], group["candidates"])
             rows.append(
                 {
-                    "Value": group["value"],
-                    "Spec Detail": group["spec_detail"],
-                    "PN Count": group["pn_count"],
-                    "Total Qty": group["total_quantity"],
-                    "Target PN": group["target"]["part_number"],
+                    "Merge ID": group["group_id"],
+                    "Review Item": self._review_item(group["value"], group["spec_detail"]),
+                    "BOM Qty": group["total_quantity"],
+                    "Keep Qty": keep_quantity,
+                    "Merge Qty": merge_quantity,
                     "Priority": group["potential"],
-                    "Reason": group["summary_reason"],
-                    "Detail": "▶ Detail",
-                    "Group": group["group_id"],
-                    "RD Decision": "⏳ 待处理 (Pending)",
+                    "Why Review": group["summary_reason"],
+                    "RD Decision": "",
+                    "Detail": "Open",
                 }
             )
 
-        for group in self._variant_summary_groups(reports, len(rows) + 1, component_type="C"):
+        for group in self._variant_summary_groups(reports, len(rows) + 1, component_type="C", assigned_parts=assigned_parts):
             rows.append(group)
 
         dataframe = pd.DataFrame(rows, columns=columns)
         if dataframe.empty:
             return dataframe
-        return dataframe.sort_values(["Value", "Priority", "Total Qty"], ascending=[True, False, False]).reset_index(drop=True)
+        dataframe["_Priority Rank"] = dataframe["Priority"].map(self._priority_rank)
+        dataframe = dataframe.sort_values(
+            ["_Priority Rank", "Merge Qty", "BOM Qty", "Review Item"],
+            ascending=[False, False, False, True],
+        ).drop(columns=["_Priority Rank"])
+        return dataframe.reset_index(drop=True)
 
     def _specification_detail_view(self, reports):
         columns = [
-            "Group",
-            "Row Type",
-            "Spec",
-            "Member PN",
+            "Merge ID",
+            "Keep PN",
+            "Merge PN",
+            "Keep Qty",
+            "Merge Qty",
+            "Difference",
             "Vendor",
-            "Member Spec",
-            "Member Qty",
-            "Qty Share",
-            "Target PN",
-            "Target Qty",
-            "Target Feature",
-            "Difference Type",
-            "Reason",
+            "Package",
+            "Voltage",
+            "Material",
+            "RD Decision",
         ]
         rows = []
         assigned_parts = {}
-        for group in self._merge_tree_groups(reports, component_type="C"):
-            target_share, candidate_share = self._target_candidate_share(group)
+        merge_groups = self._merge_tree_groups(reports, component_type="C")
+        for group in merge_groups:
             self._assign_bucket_parts(assigned_parts, group["group_id"], [group["target"], *group["candidates"]])
-            rows.append(
-                {
-                    "Group": group["group_id"],
-                    "Row Type": "Group Header",
-                    "Spec": f"{group['spec']}  |  {group['pn_count']} PN  |  Target {target_share}  |  Candidate {candidate_share}",
-                    "Member PN": "",
-                    "Vendor": "",
-                    "Member Spec": "",
-                    "Member Qty": "",
-                    "Qty Share": "",
-                    "Target PN": group["target"]["part_number"],
-                    "Target Qty": group["target"]["quantity"],
-                    "Target Feature": "Highest Qty",
-                    "Difference Type": group["potential"],
-                    "Reason": group["summary_reason"],
-                }
-            )
-            target = group["target"]
-            rows.append(
-                {
-                    "Group": group["group_id"],
-                    "Row Type": "Target PN",
-                    "Spec": group["spec"],
-                    "Member PN": target["part_number"],
-                    "Vendor": target.get("vendor", ""),
-                    "Member Spec": self._compact_spec(target["representative"]),
-                    "Member Qty": target["quantity"],
-                    "Qty Share": target_share,
-                    "Target PN": target["part_number"],
-                    "Target Qty": target["quantity"],
-                    "Target Feature": "Highest Qty",
-                    "Difference Type": "Target",
-                    "Reason": "Main target selected by highest quantity",
-                }
-            )
-            for index, candidate in enumerate(group["candidates"]):
-                branch = "└──" if index == len(group["candidates"]) - 1 else "├──"
-                difference, reason = self._part_differences(candidate["representative"], target["representative"])
-                rows.append(
-                    {
-                        "Group": group["group_id"],
-                        "Row Type": "Candidate",
-                        "Spec": f"{branch} {group['spec']}",
-                        "Member PN": candidate["part_number"],
-                        "Vendor": candidate.get("vendor", ""),
-                        "Member Spec": self._compact_spec(candidate["representative"]),
-                        "Member Qty": candidate["quantity"],
-                        "Qty Share": self._quantity_share(candidate["quantity"], group["total_quantity"]),
-                        "Target PN": target["part_number"],
-                        "Target Qty": target["quantity"],
-                        "Target Feature": "Highest Qty",
-                        "Difference Type": difference,
-                        "Reason": reason,
-                    }
-                )
-            rows.append({column: "" for column in columns})
+            rows.extend(self._same_spec_review_card(group, columns))
 
-        rows.extend(self._variant_detail_groups(reports, component_type="C", assigned_parts=assigned_parts, columns=columns))
+        rows.extend(self._variant_detail_groups(reports, component_type="C", assigned_parts=assigned_parts, columns=columns, start_index=len(merge_groups) + 1))
         self._validate_unique_buckets(assigned_parts)
 
+        rows = self._sort_detail_sections(rows, columns)
         return pd.DataFrame(rows, columns=columns)
 
     def _resistor_summary_view(self, reports):
@@ -310,7 +265,7 @@ class ExcelReportWriter:
         return pd.DataFrame(rows, columns=columns)
 
     def _nearby_value_view(self, reports):
-        columns = ["Current", "Nearby", "Difference", "Family", "PNs"]
+        columns = ["Current Value", "Current BOM Qty", "Nearby Value", "Candidate Qty", "Difference", "Tolerance Band", "Family", "Candidate PNs"]
         near_resistance = reports.get("near_resistance", pd.DataFrame())
         if near_resistance.empty:
             return pd.DataFrame(columns=columns)
@@ -321,27 +276,41 @@ class ExcelReportWriter:
             value_b = pair.get("Value_B", "")
             difference = float(pair.get("Difference_Percent", 0) or 0)
             family = self._nearby_family(pair)
-            rows.append(
-                {
-                    "Current": value_a,
-                    "Nearby": value_b,
-                    "Difference": self._signed_percent(difference),
-                    "Family": family,
-                    "PNs": pair.get("Part_Numbers_B", ""),
-                }
+            rows.extend(
+                self._nearby_reference_rows(
+                    value_a,
+                    pair.get("Quantity_A", 0),
+                    value_b,
+                    pair.get("Quantity_B", 0),
+                    difference,
+                    family,
+                    pair.get("Part_Numbers_B", ""),
+                    columns,
+                )
             )
-            rows.append(
-                {
-                    "Current": value_b,
-                    "Nearby": value_a,
-                    "Difference": self._signed_percent(-difference / (1 + difference / 100)) if difference != -100 else "",
-                    "Family": family,
-                    "PNs": pair.get("Part_Numbers_A", ""),
-                }
+            reverse_difference = -difference / (1 + difference / 100) if difference != -100 else 0
+            rows.extend(
+                self._nearby_reference_rows(
+                    value_b,
+                    pair.get("Quantity_B", 0),
+                    value_a,
+                    pair.get("Quantity_A", 0),
+                    reverse_difference,
+                    family,
+                    pair.get("Part_Numbers_A", ""),
+                    columns,
+                )
             )
 
         dataframe = pd.DataFrame(rows, columns=columns)
-        return dataframe.sort_values(["Current", "Difference", "Nearby"]).reset_index(drop=True)
+        if dataframe.empty:
+            return dataframe
+        dataframe["_Abs Difference"] = dataframe["Difference"].map(self._percent_abs_value)
+        dataframe = dataframe.sort_values(
+            ["Current Value", "_Abs Difference", "Candidate Qty", "Nearby Value"],
+            ascending=[True, True, False, True],
+        ).drop(columns=["_Abs Difference"])
+        return dataframe.reset_index(drop=True)
 
     @staticmethod
     def _avl_candidate_view(avl_candidates):
@@ -422,7 +391,7 @@ class ExcelReportWriter:
 
         groups.sort(key=lambda item: (item["potential"], item["total_quantity"]), reverse=True)
         for index, group in enumerate(groups, start=1):
-            group["group_id"] = f"Group{index:03d}"
+            group["group_id"] = f"M-{index:03d}"
         return groups
 
     def _resistor_value_groups(self, reports):
@@ -638,9 +607,11 @@ class ExcelReportWriter:
             return "Vendor Only"
         return " / ".join(differences) or "Same Spec"
 
-    def _variant_summary_groups(self, reports, start_index, component_type=None):
+    def _variant_summary_groups(self, reports, start_index, component_type=None, assigned_parts=None):
         rows = []
+        assigned_parts = assigned_parts if assigned_parts is not None else {}
         normalized = reports.get("normalized_bom", pd.DataFrame())
+        group_index = start_index
         for report_key, status, label, attribute in (
             ("different_package", "★★★", "🟡 Package", "Package_Identity"),
             ("different_voltage", "★★", "🟠 Voltage", "Voltage"),
@@ -651,44 +622,57 @@ class ExcelReportWriter:
                 variants = variants[variants["Component_Type"].eq(component_type)]
             for _, variant in variants.iterrows():
                 values = str(variant.get("Attribute_Values", ""))
-                members = self._variant_member_parts(normalized, variant, attribute, {})
+                members = self._variant_member_parts(normalized, variant, attribute, assigned_parts)
+                if len(members) < 2:
+                    continue
                 target = self._variant_target_member(members, attribute) if members else None
+                review_members = [
+                    member
+                    for member in members
+                    if target and member["part_number"] != target["part_number"]
+                    and self._engineering_difference(member["representative"], target["representative"])[0]
+                ]
+                if not target or not review_members:
+                    continue
                 reason = self._variant_reason(members, target, attribute, label) if target else f"{label} {self._compact_attribute_values(values)}"
+                keep_quantity = target["quantity"] if target else 0
+                merge_quantity = sum(member["quantity"] for member in review_members)
+                total_quantity = keep_quantity + merge_quantity
+                group_id = f"M-{group_index:03d}"
+                self._assign_bucket_parts(assigned_parts, group_id, [target, *review_members])
                 rows.append(
                     {
-                        "Value": variant.get("Normalized_Value", ""),
-                        "Spec Detail": self._compact_attribute_values(values),
-                        "PN Count": variant.get("Part_Number_Count", 0),
-                        "Total Qty": variant.get("Total_Quantity", 0),
-                        "Target PN": "Review Required",
+                        "Merge ID": group_id,
+                        "Review Item": self._review_item(variant.get("Normalized_Value", ""), self._compact_attribute_values(values)),
+                        "BOM Qty": total_quantity or variant.get("Total_Quantity", 0),
+                        "Keep Qty": keep_quantity,
+                        "Merge Qty": merge_quantity,
                         "Priority": status,
-                        "Reason": reason,
-                        "Detail": "▶ Detail",
-                        "Group": f"Review{len(rows) + 1:03d}",
-                        "RD Decision": "⏳ 待处理 (Pending)",
+                        "Why Review": reason,
+                        "RD Decision": "",
+                        "Detail": "Open",
                     }
                 )
+                group_index += 1
         return rows
 
-    def _variant_detail_groups(self, reports, component_type=None, assigned_parts=None, columns=None):
+    def _variant_detail_groups(self, reports, component_type=None, assigned_parts=None, columns=None, start_index=1):
         rows = []
         assigned_parts = assigned_parts if assigned_parts is not None else {}
         columns = columns or [
-            "Group",
-            "Row Type",
-            "Spec",
-            "Member PN",
+            "Merge ID",
+            "Keep PN",
+            "Merge PN",
+            "Keep Qty",
+            "Merge Qty",
+            "Difference",
             "Vendor",
-            "Member Spec",
-            "Member Qty",
-            "Qty Share",
-            "Target PN",
-            "Target Qty",
-            "Target Feature",
-            "Difference Type",
-            "Reason",
+            "Package",
+            "Voltage",
+            "Material",
+            "RD Decision",
         ]
-        group_index = 1
+        group_index = start_index
         normalized = reports.get("normalized_bom", pd.DataFrame())
         for report_key, label, attribute in (
             ("different_package", "🟡 Package", "Package_Identity"),
@@ -699,55 +683,162 @@ class ExcelReportWriter:
             if component_type and "Component_Type" in variants:
                 variants = variants[variants["Component_Type"].eq(component_type)]
             for _, variant in variants.iterrows():
-                group_id = f"Review{group_index:03d}"
+                group_id = f"M-{group_index:03d}"
                 members = self._variant_member_parts(normalized, variant, attribute, assigned_parts)
-                if not members:
+                if len(members) < 2:
                     continue
-                self._assign_bucket_parts(assigned_parts, group_id, members)
                 total_quantity = sum(member["quantity"] for member in members)
                 feature_distribution = self._feature_distribution(members, attribute, total_quantity)
                 target = self._variant_target_member(members, attribute)
-                target_feature = self._row_feature(target["representative"], attribute)
-                reason = self._variant_reason(members, target, attribute, label)
-                rows.append(
-                    {
-                        "Group": group_id,
-                        "Row Type": "Review Required",
-                        "Spec": f"{variant.get('Normalized_Value', '')}  |  {len(members)} PN  |  {self._format_feature_distribution(feature_distribution)}",
-                        "Member PN": "",
-                        "Vendor": "",
-                        "Member Spec": "",
-                        "Member Qty": "",
-                        "Qty Share": "",
-                        "Target PN": target["part_number"],
-                        "Target Qty": target["quantity"],
-                        "Target Feature": target_feature,
-                        "Difference Type": reason,
-                        "Reason": "Review Required",
-                    }
-                )
-                for member in sorted(members, key=lambda item: (item["part_number"] != target["part_number"], -item["quantity"], item["part_number"])):
-                    difference, difference_reason = self._part_differences(member["representative"], target["representative"])
-                    rows.append(
-                        {
-                            "Group": group_id,
-                            "Row Type": "Target PN" if member["part_number"] == target["part_number"] else "Member PN",
-                            "Spec": variant.get("Normalized_Value", ""),
-                            "Member PN": member["part_number"],
-                            "Vendor": member["vendor"],
-                            "Member Spec": self._compact_spec(member["representative"]),
-                            "Member Qty": member["quantity"],
-                            "Qty Share": self._quantity_share(member["quantity"], total_quantity),
-                            "Target PN": target["part_number"],
-                            "Target Qty": target["quantity"],
-                            "Target Feature": target_feature,
-                            "Difference Type": difference,
-                            "Reason": difference_reason,
-                        }
+                review_members = [
+                    member
+                    for member in members
+                    if member["part_number"] != target["part_number"]
+                    and self._engineering_difference(member["representative"], target["representative"])[0]
+                ]
+                if not review_members:
+                    continue
+                self._assign_bucket_parts(assigned_parts, group_id, [target, *review_members])
+                primary_difference = self._primary_difference_type(review_members, target)
+                rows.extend(
+                    self._review_required_card(
+                        group_id,
+                        variant.get("Normalized_Value", ""),
+                        primary_difference,
+                        target,
+                        review_members,
+                        feature_distribution,
+                        total_quantity,
+                        columns,
                     )
+                )
                 rows.append({column: "" for column in columns})
                 group_index += 1
         return rows
+
+    def _same_spec_review_card(self, group, columns):
+        """Build a KEEP/MERGE worksheet block for exact-spec PN consolidation."""
+        target = group["target"]
+        candidates = group["candidates"]
+        rows = [self._workspace_row(group["group_id"], target, None, difference="KEEP")]
+        for candidate in sorted(candidates, key=lambda item: (-item["quantity"], item["part_number"])):
+            _, difference = self._engineering_difference(candidate["representative"], target["representative"])
+            rows.append(self._workspace_row(group["group_id"], target, candidate, difference or "Same Spec"))
+        rows.append({column: "" for column in columns})
+        return rows
+
+    def _review_required_card(self, group_id, value, difference_type, target, review_members, feature_distribution, total_quantity, columns):
+        """Build a KEEP/MERGE worksheet block for one review-required group."""
+        rows = [self._workspace_row(group_id, target, None, difference="KEEP")]
+        for member in sorted(review_members, key=lambda item: (-item["quantity"], item["part_number"])):
+            _, difference = self._engineering_difference(member["representative"], target["representative"])
+            rows.append(self._workspace_row(group_id, target, member, difference))
+        return rows
+
+    def _workspace_row(self, group_id, keep_part, merge_part=None, difference=""):
+        """Return one normalized Merge Workspace row using KEEP/MERGE language."""
+        keep_row = keep_part["representative"]
+        merge_row = merge_part["representative"] if merge_part else keep_row
+        return {
+            "Merge ID": group_id,
+            "Keep PN": keep_part["part_number"],
+            "Merge PN": merge_part["part_number"] if merge_part else "",
+            "Keep Qty": keep_part["quantity"],
+            "Merge Qty": merge_part["quantity"] if merge_part else "",
+            "Difference": difference,
+            "Vendor": self._direction_text(merge_row.get("Vendor", ""), keep_row.get("Vendor", "")) if merge_part else keep_row.get("Vendor", ""),
+            "Package": self._direction_text(merge_row.get("Package_Identity", ""), keep_row.get("Package_Identity", "")) if merge_part else keep_row.get("Package_Identity", ""),
+            "Voltage": self._direction_text(merge_row.get("Voltage", ""), keep_row.get("Voltage", "")) if merge_part else keep_row.get("Voltage", ""),
+            "Material": self._direction_text(merge_row.get("Dielectric", ""), keep_row.get("Dielectric", "")) if merge_part else keep_row.get("Dielectric", ""),
+            "RD Decision": "" if merge_part else "",
+        }
+
+    @staticmethod
+    def _review_quantities(keep_part, merge_parts):
+        """Return the three report quantities as Keep Qty and Merge Qty."""
+        keep_quantity = keep_part["quantity"] if keep_part else 0
+        merge_quantity = sum(part["quantity"] for part in merge_parts)
+        return keep_quantity, merge_quantity
+
+    def _nearby_reference_rows(self, current_value, current_quantity, nearby_value, candidate_quantity, difference, family, candidate_pns, columns):
+        """Return a nearby resistor row only when the candidate is within an RD-useful band."""
+        absolute_difference = abs(float(difference or 0))
+        if absolute_difference > 10:
+            return []
+        return [
+            {
+                "Current Value": current_value,
+                "Current BOM Qty": float(current_quantity or 0),
+                "Nearby Value": nearby_value,
+                "Candidate Qty": float(candidate_quantity or 0),
+                "Difference": self._signed_percent(difference),
+                "Tolerance Band": self._tolerance_band(absolute_difference),
+                "Family": family,
+                "Candidate PNs": candidate_pns,
+            }
+        ]
+
+    @staticmethod
+    def _tolerance_band(absolute_difference):
+        """Classify nearby resistor values into the review bands RD asked for."""
+        if absolute_difference <= 2:
+            return "±2%"
+        if absolute_difference <= 5:
+            return "±5%"
+        return "±10%"
+
+    @staticmethod
+    def _percent_abs_value(percent_text):
+        """Convert a signed percent string into an absolute numeric sort value."""
+        try:
+            return abs(float(str(percent_text).replace("%", "")))
+        except (TypeError, ValueError):
+            return 999
+
+    @staticmethod
+    def _review_item(value, detail):
+        """Combine value and spec detail into the Summary review item label."""
+        return f"{value} | {detail}" if detail else str(value or "")
+
+    @staticmethod
+    def _direction_text(current, recommended):
+        """Show Current -> Recommended when values differ, otherwise show the stable value."""
+        current_text = str(current or "").strip()
+        recommended_text = str(recommended or "").strip()
+        if current_text and recommended_text and current_text != recommended_text:
+            return f"{current_text} → {recommended_text}"
+        return recommended_text or current_text
+
+    @staticmethod
+    def _priority_rank(priority):
+        """Convert star priority text into a sortable numeric rank."""
+        return str(priority or "").count("★")
+
+    def _feature_from_distribution(self, distribution, target):
+        """Pick the highest-quantity feature already selected as the keep side."""
+        target_features = {self._row_feature(target["representative"], field) for field in ("Package_Identity", "Voltage", "Dielectric", "Tolerance")}
+        for item in distribution:
+            if item["feature"] in target_features:
+                return item["feature"]
+        return distribution[0]["feature"] if distribution else "Keep"
+
+    @staticmethod
+    def _card_current_value(difference, difference_type):
+        """Extract a short Current value for the card row from a multi-line difference."""
+        for block in str(difference or "").split("\n\n"):
+            lines = block.splitlines()
+            if lines and lines[0] == difference_type and "→" in lines[-1]:
+                return lines[-1].split("→", 1)[0].strip()
+        return str(difference or "")
+
+    @staticmethod
+    def _card_recommendation(difference):
+        """Extract the recommended value from the first visible difference."""
+        for block in str(difference or "").split("\n\n"):
+            lines = block.splitlines()
+            if lines and "→" in lines[-1]:
+                return lines[-1].split("→", 1)[1].strip()
+        return "Review"
 
     def _variant_member_parts(self, normalized, variant, attribute, assigned_parts):
         required_columns = {"Component_Type", "Part_Number", "Quantity_Normalized", attribute}
@@ -809,6 +900,78 @@ class ExcelReportWriter:
     @staticmethod
     def _format_feature_distribution(distribution):
         return " | ".join(f"{item['feature']}: {item['quantity']:g} pcs ({str(item['share']).split('(', 1)[-1]}" for item in distribution)
+
+    def _engineering_difference(self, current, target):
+        """Return only engineering-relevant fields that differ from the target PN."""
+        checks = (
+            ("Vendor", "Vendor", "Vendor"),
+            ("Package_Identity", "Package", "Package"),
+            ("Voltage", "Voltage", "Voltage"),
+            ("Dielectric", "Material", "Material"),
+            ("Tolerance", "Tolerance", "Tolerance"),
+        )
+        difference_types = []
+        difference_lines = []
+        for field, difference_type, label in checks:
+            current_value = str(current.get(field, "") or "")
+            target_value = str(target.get(field, "") or "")
+            if current_value != target_value:
+                difference_types.append(difference_type)
+                difference_lines.append(f"{label}\n{current_value or '(blank)'} → {target_value or '(blank)'}")
+
+        return " / ".join(difference_types), "\n\n".join(difference_lines)
+
+    def _group_primary_difference(self, candidates, target):
+        """Find the first visible difference type for sorting and scanning a merge group."""
+        return self._primary_difference_type(candidates, target) or "Same Spec"
+
+    def _primary_difference_type(self, members, target):
+        """Sort review sections by RD scan order: Vendor, Package, Voltage, Material."""
+        order = {"Vendor": 0, "Package": 1, "Voltage": 2, "Material": 3, "Tolerance": 4}
+        found = []
+        for member in members:
+            difference_type, _ = self._engineering_difference(member["representative"], target["representative"])
+            found.extend(part.strip() for part in difference_type.split("/") if part.strip())
+        if not found:
+            return ""
+        return sorted(set(found), key=lambda item: order.get(item, 99))[0]
+
+    def _sort_detail_sections(self, rows, columns):
+        """Keep each Merge Workspace group intact while preserving Merge ID order."""
+        sections = []
+        section = []
+        for row in rows:
+            if not any(row.values()):
+                if section:
+                    sections.append(section)
+                    section = []
+                sections.append([row])
+            elif row.get("Merge ID") and (not section or row.get("Merge ID") != section[0].get("Merge ID")):
+                if section:
+                    sections.append(section)
+                section = [row]
+            elif section:
+                section.append(row)
+            else:
+                sections.append([row])
+        if section:
+            sections.append(section)
+
+        def section_key(section_rows):
+            merge_id = str(section_rows[0].get("Merge ID", ""))
+            return merge_id or "ZZZ"
+
+        sorted_rows = []
+        for section_rows in sorted(sections, key=section_key):
+            sorted_rows.extend(section_rows)
+        return [row if row else {column: "" for column in columns} for row in sorted_rows]
+
+    @staticmethod
+    def _quantity_percent(quantity, total_quantity):
+        """Format a compact integer percentage for group summary rows."""
+        if not total_quantity:
+            return "0%"
+        return f"{round(float(quantity) / float(total_quantity) * 100):g}%"
 
     @staticmethod
     def _row_feature(row, attribute):
@@ -938,7 +1101,7 @@ class ExcelReportWriter:
                 cell.fill = PatternFill("solid", fgColor=self.COLORS["navy"])
 
         worksheet.merge_cells("A3:H3")
-        worksheet["A3"] = "Global health check: AI finds review groups; RD records decisions in Summary sheets."
+        worksheet["A3"] = "Global health check: Dashboard shows scope; Summary queues review; RD records decisions in Merge Workspace."
         worksheet["A3"].font = Font(name="Aptos", size=11, color=self.COLORS["muted"])
         worksheet["A3"].alignment = Alignment(vertical="center")
 
@@ -1020,7 +1183,7 @@ class ExcelReportWriter:
         worksheet["A15"].font = Font(name="Aptos Display", size=16, bold=True, color=self.COLORS["teal"])
         worksheet["A15"].alignment = Alignment(vertical="center")
 
-        headers = ["Spec", "Current PN", "Qty", "Target PN", "Target Qty", "Difference", "Difficulty", "Action"]
+        headers = ["Spec", "Merge PN", "Merge Qty", "Keep PN", "Keep Qty", "Difference", "Difficulty", "Action"]
         for column_index, header in enumerate(headers, start=1):
             cell = worksheet.cell(16, column_index, header)
             cell.fill = PatternFill("solid", fgColor=self.COLORS["navy"])
@@ -1038,10 +1201,10 @@ class ExcelReportWriter:
         for row_index, (_, row) in enumerate(top_rows.iterrows(), start=17):
             values = [
                 row.get("Spec", ""),
-                row.get("Current PN", ""),
-                row.get("Current Qty", ""),
-                row.get("Target PN", ""),
-                row.get("Target Qty", ""),
+                row.get("Merge PN", ""),
+                row.get("Merge Qty", ""),
+                row.get("Keep PN", ""),
+                row.get("Keep Qty", ""),
                 row.get("Difference", ""),
                 row.get("Merge Difficulty", ""),
                 row.get("Action", ""),
@@ -1359,20 +1522,20 @@ class ExcelReportWriter:
         return int(part_numbers.nunique())
 
     def _link_summary_to_detail(self, workbook):
-        if "Capacitor Summary" not in workbook or "Capacitor Detail" not in workbook:
+        if "Capacitor Summary" not in workbook or "Merge Workspace" not in workbook:
             return
 
         summary = workbook["Capacitor Summary"]
-        detail = workbook["Capacitor Detail"]
+        detail = workbook["Merge Workspace"]
         detail_rows = {
             detail.cell(row_index, 1).value: row_index
             for row_index in range(2, detail.max_row + 1)
-            if detail.cell(row_index, 2).value in {"Group Header", "Review Required"}
+            if detail.cell(row_index, 1).value
         }
         headers = [cell.value for cell in summary[1]]
         try:
             detail_column = headers.index("Detail") + 1
-            group_column = headers.index("Group") + 1
+            group_column = headers.index("Merge ID") + 1
         except ValueError:
             return
 
@@ -1380,8 +1543,23 @@ class ExcelReportWriter:
             group_id = summary.cell(row_index, group_column).value
             target_row = detail_rows.get(group_id, 1)
             cell = summary.cell(row_index, detail_column)
-            cell.hyperlink = f"#'Capacitor Detail'!A{target_row}"
+            cell.hyperlink = f"#'Merge Workspace'!A{target_row}"
             cell.style = "Hyperlink"
+
+    def _sync_summary_from_workspace(self, workbook):
+        """Make Summary decision read from Merge Workspace by Merge ID."""
+        if "Capacitor Summary" not in workbook or "Merge Workspace" not in workbook:
+            return
+        summary = workbook["Capacitor Summary"]
+        summary_headers = [cell.value for cell in summary[1]]
+        try:
+            merge_id_column = summary_headers.index("Merge ID") + 1
+            decision_column = summary_headers.index("RD Decision") + 1
+        except ValueError:
+            return
+        for row_index in range(2, summary.max_row + 1):
+            merge_id_cell = summary.cell(row_index, merge_id_column).coordinate
+            summary.cell(row_index, decision_column).value = f'=IFERROR(IF(VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$K,11,FALSE)="","Pending",VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$K,11,FALSE)),"Pending")'
 
     def _link_resistor_summary_to_detail(self, workbook):
         if "Resistor Summary" not in workbook or "Resistor Detail" not in workbook:
@@ -1409,8 +1587,8 @@ class ExcelReportWriter:
             cell.style = "Hyperlink"
 
     def _add_rd_decision_dropdowns(self, workbook):
-        options = "⏳ 待处理 (Pending),✅ 同意合并 (Merged),❌ 保持原样 (Keep)"
-        for sheet_name in ("Capacitor Summary", "Resistor Summary"):
+        decision_options = "Merge,Keep,Skip"
+        for sheet_name in ("Merge Workspace",):
             if sheet_name not in workbook:
                 continue
             worksheet = workbook[sheet_name]
@@ -1418,10 +1596,10 @@ class ExcelReportWriter:
             if "RD Decision" not in headers:
                 continue
             column_letter = worksheet.cell(1, headers.index("RD Decision") + 1).column_letter
-            validation = DataValidation(type="list", formula1=f'"{options}"', allow_blank=True)
-            validation.error = "Please choose one of the RD decision options."
+            validation = DataValidation(type="list", formula1=f'"{decision_options}"', allow_blank=True)
+            validation.error = "Please choose Merge, Keep, or Skip."
             validation.errorTitle = "Invalid RD Decision"
-            validation.prompt = "Select RD review decision."
+            validation.prompt = "Select the engineering decision for this merge row."
             validation.promptTitle = "RD Decision"
             worksheet.add_data_validation(validation)
             validation.add(f"{column_letter}2:{column_letter}1048576")
@@ -1470,50 +1648,50 @@ class ExcelReportWriter:
 
     def _format_specification_summary(self, worksheet, dataframe):
         headers = [cell.value for cell in worksheet[1]]
-        if "Group" in headers:
-            group_letter = worksheet.cell(1, headers.index("Group") + 1).column_letter
-            worksheet.column_dimensions[group_letter].hidden = True
         if dataframe.empty:
             return
-        if "Value" in headers:
-            value_letter = worksheet.cell(1, headers.index("Value") + 1).column_letter
+        widths = {
+            "Merge ID": 12,
+            "Review Item": 28,
+            "BOM Qty": 10,
+            "Keep Qty": 10,
+            "Merge Qty": 10,
+            "Priority": 12,
+            "Why Review": 32,
+            "RD Decision": 14,
+            "Detail": 10,
+        }
+        for header, width in widths.items():
+            if header in headers:
+                worksheet.column_dimensions[worksheet.cell(1, headers.index(header) + 1).column_letter].width = width
+        if "Review Item" in headers:
+            value_letter = worksheet.cell(1, headers.index("Review Item") + 1).column_letter
             worksheet.column_dimensions[value_letter].width = 16
             for cell in worksheet[value_letter][1:]:
                 cell.font = Font(name="Aptos Display", size=12, bold=True, color=self.COLORS["teal"])
-        if "Reason" in headers:
-            reason_letter = worksheet.cell(1, headers.index("Reason") + 1).column_letter
-            worksheet.column_dimensions[reason_letter].width = 22
-        if "RD Decision" in headers:
-            decision_letter = worksheet.cell(1, headers.index("RD Decision") + 1).column_letter
-            worksheet.column_dimensions[decision_letter].width = 22
 
     def _format_specification_detail(self, worksheet, dataframe):
         if dataframe.empty:
             return
         headers = [cell.value for cell in worksheet[1]]
-        if "Group" in headers:
-            group_letter = worksheet.cell(1, headers.index("Group") + 1).column_letter
-            worksheet.column_dimensions[group_letter].hidden = True
         try:
-            row_type_column = headers.index("Row Type") + 1
-            spec_column = headers.index("Spec") + 1
+            merge_id_column = headers.index("Merge ID") + 1
+            merge_pn_column = headers.index("Merge PN") + 1
         except ValueError:
             return
 
         fills = {
-            "Group Header": PatternFill("solid", fgColor=self.COLORS["cyan"]),
-            "Review Required": PatternFill("solid", fgColor=self.COLORS["medium"]),
-            "Target PN": PatternFill("solid", fgColor=self.COLORS["low"]),
-            "Member PN": PatternFill("solid", fgColor=self.COLORS["white"]),
+            "KEEP": PatternFill("solid", fgColor=self.COLORS["low"]),
+            "MERGE": PatternFill("solid", fgColor=self.COLORS["medium"]),
         }
         for row_index in range(2, worksheet.max_row + 1):
-            row_type = worksheet.cell(row_index, row_type_column).value
-            fill = fills.get(row_type)
+            section = "MERGE" if worksheet.cell(row_index, merge_pn_column).value else "KEEP"
+            fill = fills.get(section)
             if fill:
                 for cell in worksheet[row_index]:
                     cell.fill = fill
-            if row_type in {"Group Header", "Review Required", "Target PN"}:
-                worksheet.cell(row_index, spec_column).font = Font(
+            if section == "KEEP":
+                worksheet.cell(row_index, merge_id_column).font = Font(
                     name="Aptos",
                     size=10,
                     bold=True,
@@ -1521,17 +1699,17 @@ class ExcelReportWriter:
                 )
 
         widths = {
-            "Spec": 42,
-            "Member PN": 18,
+            "Merge ID": 12,
+            "Keep PN": 18,
+            "Merge PN": 18,
+            "Keep Qty": 10,
+            "Merge Qty": 10,
+            "Difference": 28,
             "Vendor": 18,
-            "Member Spec": 34,
-            "Member Qty": 12,
-            "Qty Share": 14,
-            "Target PN": 18,
-            "Target Qty": 12,
-            "Target Feature": 16,
-            "Difference Type": 32,
-            "Reason": 32,
+            "Package": 18,
+            "Voltage": 16,
+            "Material": 16,
+            "RD Decision": 14,
         }
         for header, width in widths.items():
             if header in headers:
@@ -1614,11 +1792,14 @@ class ExcelReportWriter:
         if dataframe.empty:
             return
         widths = {
-            "Current": 14,
-            "Nearby": 14,
+            "Current Value": 16,
+            "Current BOM Qty": 14,
+            "Nearby Value": 16,
+            "Candidate Qty": 14,
             "Difference": 12,
+            "Tolerance Band": 14,
             "Family": 34,
-            "PNs": 28,
+            "Candidate PNs": 32,
         }
         headers = [cell.value for cell in worksheet[1]]
         for header, width in widths.items():

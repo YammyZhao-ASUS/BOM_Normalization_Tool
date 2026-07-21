@@ -73,12 +73,15 @@ def run_self_test():
             workbook = load_workbook(output_file, read_only=False, data_only=False)
             try:
                 expected_sheets = [
-                    "Dashboard",
+                    "Overview",
                     "Merge Candidate",
-                    "Specification Summary",
-                    "Specification Detail",
+                    "Capacitor Summary",
+                    "Capacitor Detail",
+                    "Resistor Summary",
+                    "Resistor Detail",
                     "AVL Candidate",
                     "Risk Review",
+                    "Nearby Value",
                     "Settings",
                 ]
                 if workbook.sheetnames != expected_sheets:

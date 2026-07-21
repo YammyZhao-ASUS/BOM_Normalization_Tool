@@ -269,7 +269,10 @@ class SpecificationAnalyzer:
                 "Package_Identity",
             ],
         }[component_type]
-        return [field for field in fields if field != target_attribute]
+        excluded_fields = {target_attribute}
+        if component_type == "C" and target_attribute == "Dielectric":
+            excluded_fields.add("Tolerance")
+        return [field for field in fields if field not in excluded_fields]
 
     @staticmethod
     def _format_context(fields, family_key):

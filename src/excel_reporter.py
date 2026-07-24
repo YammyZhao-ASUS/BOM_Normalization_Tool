@@ -627,11 +627,13 @@ class ExcelReportWriter:
         detail_blocks = []
         for candidate in candidates:
             lines = [
-                f"Target Value : {candidate['display_value']}",
-                f"Package : {candidate.get('package', '') or '-'}",
-                f"Qty : {candidate['quantity']:g} pcs",
-                f"Difference : {self._signed_percent(candidate['difference_percent'])}",
+                candidate["display_value"],
+                f"Qty {candidate['quantity']:g}",
+                self._signed_percent(candidate["difference_percent"]),
             ]
+            package = candidate.get("package", "")
+            if package:
+                lines.insert(1, package)
             detail_blocks.append("\n".join(lines))
         if not detail_blocks:
             return base_reason
@@ -1713,7 +1715,7 @@ class ExcelReportWriter:
         }
         headers = [cell.value for cell in summary[1]]
         try:
-            link_column = headers.index("Value") + 1
+            link_columns = [headers.index("Value") + 1, headers.index("PN Count") + 1]
             group_column = headers.index("Group") + 1
         except ValueError:
             return
@@ -1721,9 +1723,10 @@ class ExcelReportWriter:
         for row_index in range(2, summary.max_row + 1):
             group_id = summary.cell(row_index, group_column).value
             target_row = detail_rows.get(group_id, 1)
-            cell = summary.cell(row_index, link_column)
-            cell.hyperlink = f"#'Resistor Detail'!A{target_row}"
-            cell.style = "Hyperlink"
+            for link_column in link_columns:
+                cell = summary.cell(row_index, link_column)
+                cell.hyperlink = f"#'Resistor Detail'!A{target_row}"
+                cell.style = "Hyperlink"
 
     def _sync_resistor_summary_from_workspace(self, workbook):
         """Make Resistor Summary BOM Action read from the Resistor Detail workspace."""
@@ -1926,6 +1929,21 @@ class ExcelReportWriter:
                 fill = fills.get(worksheet.cell(row_index, action_column).value)
                 if fill:
                     worksheet.cell(row_index, action_column).fill = fill
+        if "BOM Action" in headers:
+            action_letter = worksheet.cell(1, headers.index("BOM Action") + 1).column_letter
+            action_fills = {
+                "🟢 Merge": self.COLORS["low"],
+                "🟡 Review": self.COLORS["medium"],
+                "⚪ Keep": self.COLORS["white"],
+            }
+            for action, color in action_fills.items():
+                worksheet.conditional_formatting.add(
+                    f"{action_letter}2:{action_letter}{worksheet.max_row}",
+                    FormulaRule(
+                        formula=[f'LEFT(${action_letter}2,LEN("{action}"))="{action}"'],
+                        fill=PatternFill("solid", fgColor=color),
+                    ),
+                )
 
     def _format_resistor_detail(self, worksheet, dataframe):
         if dataframe.empty:

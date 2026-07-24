@@ -283,10 +283,11 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.assertEqual(summary_rows["10kOhm"][6], "🟡 Tolerance 1%⇄5%")
             self.assertEqual(summary_rows["9.76kOhm"][3], "Review Required")
             self.assertIn("🟠 Near Value 9.76kΩ ➔ 9.9kΩ", summary_rows["9.76kOhm"][6])
-            self.assertIn("Target Value : 9.9kΩ", summary_rows["9.76kOhm"][6])
-            self.assertIn("Package : 0402", summary_rows["9.76kOhm"][6])
-            self.assertIn("Qty : 10 pcs", summary_rows["9.76kOhm"][6])
-            self.assertIn("Difference : -1.41%", summary_rows["9.76kOhm"][6])
+            self.assertIn("9.9kΩ\n0402\nQty 10\n-1.41%", summary_rows["9.76kOhm"][6])
+            self.assertNotIn("Target Value", summary_rows["9.76kOhm"][6])
+            self.assertNotIn("Package :", summary_rows["9.76kOhm"][6])
+            self.assertNotIn("Difference :", summary_rows["9.76kOhm"][6])
+            self.assertIsNotNone(summary["B2"].hyperlink)
 
             ten_k_pn_rows = [
                 [detail.cell(row_index, column).value for column in range(1, 10)]

@@ -76,12 +76,12 @@ def run_self_test():
                     "Overview",
                     "Merge Candidate",
                     "Capacitor Summary",
-                    "Merge Workspace",
+                    "Capacitor Merge Workspace",
                     "Resistor Summary",
-                    "Resistor Detail",
+                    "Resistor Merge Workspace",
+                    "Resistor Nearby Value",
                     "AVL Candidate",
                     "Risk Review",
-                    "Resistor Nearby Value",
                     "Settings",
                 ]
                 if workbook.sheetnames != expected_sheets:

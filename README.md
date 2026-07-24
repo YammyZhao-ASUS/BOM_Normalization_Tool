@@ -28,9 +28,9 @@ Generated report includes:
 | Same Specification | Components with identical specifications but different part numbers |
 | Near Values | Similar resistor/capacitor values requiring engineering review |
 | Capacitor Summary | Capacitor merge recommendation summary |
-| Capacitor Detail | Detailed capacitor comparison and review workspace |
+| Capacitor Merge Workspace | Interactive capacitor comparison and review workspace |
 | Resistor Summary | Resistor merge recommendation summary |
-| Resistor Detail | Detailed resistor comparison and review workspace |
+| Resistor Merge Workspace | Interactive resistor comparison and review workspace |
 
 ---
 
@@ -193,7 +193,6 @@ PRD documents describe product requirements and engineering objectives.
 
 Planned improvements include:
 
-- Resistor Merge Workspace
 - Unified Review Framework
 - Merge Target recommendation
 - Rule-based merge validation

@@ -14,12 +14,15 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 class ExcelReportWriter:
     """Create an RD-focused Excel workbook for daily PN optimization work."""
 
+    CAPACITOR_WORKSPACE_SHEET = "Capacitor Merge Workspace"
+    RESISTOR_WORKSPACE_SHEET = "Resistor Merge Workspace"
+
     SHEETS = (
         ("Merge Candidate", "merge_candidates"),
         ("Capacitor Summary", "specification_summary"),
-        ("Merge Workspace", "specification_detail"),
+        (CAPACITOR_WORKSPACE_SHEET, "specification_detail"),
         ("Resistor Summary", "resistor_summary"),
-        ("Resistor Detail", "resistor_detail"),
+        (RESISTOR_WORKSPACE_SHEET, "resistor_detail"),
         ("Resistor Nearby Value", "nearby_value"),
         ("AVL Candidate", "avl_candidate"),
         ("Risk Review", "risk_review"),
@@ -39,6 +42,12 @@ class ExcelReportWriter:
         "high": "FCE5CD",
         "medium": "FFF2CC",
         "low": "D9EAD3",
+    }
+    BOM_ACTIONS = ("🟢 Merge", "🟡 Review", "⚪ Keep")
+    BOM_ACTION_FILL_KEYS = {
+        "🟢 Merge": "low",
+        "🟡 Review": "medium",
+        "⚪ Keep": "white",
     }
 
     def write(self, reports, output_file):
@@ -1242,7 +1251,7 @@ class ExcelReportWriter:
                 cell.fill = PatternFill("solid", fgColor=self.COLORS["navy"])
 
         worksheet.merge_cells("A3:H3")
-        worksheet["A3"] = "Global health check: Dashboard shows scope; Summary queues review; RD records BOM Action in Merge Workspace."
+        worksheet["A3"] = "Global health check: Dashboard shows scope; Summary queues review; RD records BOM Action in component Merge Workspaces."
         worksheet["A3"].font = Font(name="Aptos", size=11, color=self.COLORS["muted"])
         worksheet["A3"].alignment = Alignment(vertical="center")
 
@@ -1663,11 +1672,12 @@ class ExcelReportWriter:
         return int(part_numbers.nunique())
 
     def _link_summary_to_detail(self, workbook):
-        if "Capacitor Summary" not in workbook or "Merge Workspace" not in workbook:
+        workspace_name = self.CAPACITOR_WORKSPACE_SHEET
+        if "Capacitor Summary" not in workbook or workspace_name not in workbook:
             return
 
         summary = workbook["Capacitor Summary"]
-        detail = workbook["Merge Workspace"]
+        detail = workbook[workspace_name]
         detail_rows = {
             detail.cell(row_index, 1).value: row_index
             for row_index in range(2, detail.max_row + 1)
@@ -1684,12 +1694,13 @@ class ExcelReportWriter:
             group_id = summary.cell(row_index, group_column).value
             target_row = detail_rows.get(group_id, 1)
             cell = summary.cell(row_index, detail_column)
-            cell.hyperlink = f"#'Merge Workspace'!A{target_row}"
+            cell.hyperlink = f"#'{workspace_name}'!A{target_row}"
             cell.style = "Hyperlink"
 
     def _sync_summary_from_workspace(self, workbook):
-        """Make Summary BOM Action read from Merge Workspace by Merge ID."""
-        if "Capacitor Summary" not in workbook or "Merge Workspace" not in workbook:
+        """Make Summary BOM Action read from Capacitor Merge Workspace by Merge ID."""
+        workspace_name = self.CAPACITOR_WORKSPACE_SHEET
+        if "Capacitor Summary" not in workbook or workspace_name not in workbook:
             return
         summary = workbook["Capacitor Summary"]
         summary_headers = [cell.value for cell in summary[1]]
@@ -1700,14 +1711,16 @@ class ExcelReportWriter:
             return
         for row_index in range(2, summary.max_row + 1):
             merge_id_cell = summary.cell(row_index, merge_id_column).coordinate
-            summary.cell(row_index, action_column).value = f'=IFERROR(IF(VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$L,12,FALSE)="","Pending",VLOOKUP(${merge_id_cell},\'Merge Workspace\'!$A:$L,12,FALSE)),"Pending")'
+            action_lookup = f"VLOOKUP(${merge_id_cell},'{workspace_name}'!$A:$L,12,FALSE)"
+            summary.cell(row_index, action_column).value = f'=IFERROR(IF({action_lookup}="","Pending",{action_lookup}),"Pending")'
 
     def _link_resistor_summary_to_detail(self, workbook):
-        if "Resistor Summary" not in workbook or "Resistor Detail" not in workbook:
+        workspace_name = self.RESISTOR_WORKSPACE_SHEET
+        if "Resistor Summary" not in workbook or workspace_name not in workbook:
             return
 
         summary = workbook["Resistor Summary"]
-        detail = workbook["Resistor Detail"]
+        detail = workbook[workspace_name]
         detail_rows = {
             detail.cell(row_index, 1).value: row_index
             for row_index in range(2, detail.max_row + 1)
@@ -1725,16 +1738,17 @@ class ExcelReportWriter:
             target_row = detail_rows.get(group_id, 1)
             for link_column in link_columns:
                 cell = summary.cell(row_index, link_column)
-                cell.hyperlink = f"#'Resistor Detail'!A{target_row}"
+                cell.hyperlink = f"#'{workspace_name}'!A{target_row}"
                 cell.style = "Hyperlink"
 
     def _sync_resistor_summary_from_workspace(self, workbook):
-        """Make Resistor Summary BOM Action read from the Resistor Detail workspace."""
-        if "Resistor Summary" not in workbook or "Resistor Detail" not in workbook:
+        """Make Resistor Summary BOM Action read from Resistor Merge Workspace."""
+        workspace_name = self.RESISTOR_WORKSPACE_SHEET
+        if "Resistor Summary" not in workbook or workspace_name not in workbook:
             return
         summary = workbook["Resistor Summary"]
         summary_headers = [cell.value for cell in summary[1]]
-        detail_headers = [cell.value for cell in workbook["Resistor Detail"][1]]
+        detail_headers = [cell.value for cell in workbook[workspace_name][1]]
         try:
             group_column = summary_headers.index("Group") + 1
             action_column = summary_headers.index("BOM Action") + 1
@@ -1744,21 +1758,16 @@ class ExcelReportWriter:
             return
         for row_index in range(2, summary.max_row + 1):
             group_cell = summary.cell(row_index, group_column).coordinate
-            action_lookup = f"VLOOKUP(${group_cell},'Resistor Detail'!$A:$K,{detail_action_index},FALSE)"
-            target_lookup = f"VLOOKUP(${group_cell},'Resistor Detail'!$A:$K,{merge_target_index},FALSE)"
+            action_lookup = f"VLOOKUP(${group_cell},'{workspace_name}'!$A:$K,{detail_action_index},FALSE)"
+            target_lookup = f"VLOOKUP(${group_cell},'{workspace_name}'!$A:$K,{merge_target_index},FALSE)"
             summary.cell(row_index, action_column).value = (
                 f'=IFERROR(IF({action_lookup}="","Pending",{action_lookup}'
                 f'&IF({target_lookup}="",""," → "&{target_lookup})),"Pending")'
             )
 
     def _add_rd_decision_dropdowns(self, workbook):
-        action_options = "🟢 Merge,🟡 Review,⚪ Keep"
-        action_fills = {
-            "🟢 Merge": self.COLORS["low"],
-            "🟡 Review": self.COLORS["medium"],
-            "⚪ Keep": self.COLORS["white"],
-        }
-        for sheet_name in ("Merge Workspace", "Resistor Detail"):
+        action_options = ",".join(self.BOM_ACTIONS)
+        for sheet_name in (self.CAPACITOR_WORKSPACE_SHEET, self.RESISTOR_WORKSPACE_SHEET):
             if sheet_name not in workbook:
                 continue
             worksheet = workbook[sheet_name]
@@ -1773,16 +1782,25 @@ class ExcelReportWriter:
             validation.promptTitle = "BOM Action"
             worksheet.add_data_validation(validation)
             validation.add(f"{column_letter}2:{column_letter}1048576")
-            if worksheet.max_row < 2:
-                continue
-            for action, color in action_fills.items():
-                worksheet.conditional_formatting.add(
-                    f"{column_letter}2:{column_letter}{worksheet.max_row}",
-                    FormulaRule(
-                        formula=[f'${column_letter}2="{action}"'],
-                        fill=PatternFill("solid", fgColor=color),
-                    ),
-                )
+            self._add_bom_action_conditional_formatting(worksheet, column_letter)
+
+    def _add_bom_action_conditional_formatting(self, worksheet, column_letter, prefix_match=False):
+        for action in self.BOM_ACTIONS:
+            formula = (
+                f'LEFT(${column_letter}2,LEN("{action}"))="{action}"'
+                if prefix_match
+                else f'${column_letter}2="{action}"'
+            )
+            worksheet.conditional_formatting.add(
+                f"{column_letter}2:{column_letter}1048576",
+                FormulaRule(
+                    formula=[formula],
+                    fill=PatternFill("solid", fgColor=self._bom_action_fill(action)),
+                ),
+            )
+
+    def _bom_action_fill(self, action):
+        return self.COLORS[self.BOM_ACTION_FILL_KEYS[action]]
 
     def _format_data_sheet(self, worksheet, dataframe, report_key):
         worksheet.sheet_view.showGridLines = False
@@ -1901,6 +1919,9 @@ class ExcelReportWriter:
         if "Group" in headers:
             group_letter = worksheet.cell(1, headers.index("Group") + 1).column_letter
             worksheet.column_dimensions[group_letter].hidden = True
+        if "BOM Action" in headers:
+            action_letter = worksheet.cell(1, headers.index("BOM Action") + 1).column_letter
+            self._add_bom_action_conditional_formatting(worksheet, action_letter, prefix_match=True)
         if dataframe.empty:
             return
         widths = {
@@ -1929,21 +1950,6 @@ class ExcelReportWriter:
                 fill = fills.get(worksheet.cell(row_index, action_column).value)
                 if fill:
                     worksheet.cell(row_index, action_column).fill = fill
-        if "BOM Action" in headers:
-            action_letter = worksheet.cell(1, headers.index("BOM Action") + 1).column_letter
-            action_fills = {
-                "🟢 Merge": self.COLORS["low"],
-                "🟡 Review": self.COLORS["medium"],
-                "⚪ Keep": self.COLORS["white"],
-            }
-            for action, color in action_fills.items():
-                worksheet.conditional_formatting.add(
-                    f"{action_letter}2:{action_letter}{worksheet.max_row}",
-                    FormulaRule(
-                        formula=[f'LEFT(${action_letter}2,LEN("{action}"))="{action}"'],
-                        fill=PatternFill("solid", fgColor=color),
-                    ),
-                )
 
     def _format_resistor_detail(self, worksheet, dataframe):
         if dataframe.empty:

@@ -2,7 +2,7 @@
 ## BOM Normalization Tool – Resistor Merge Workspace
 
 **Version:** V1.0  
-**Status:** Proposed  
+**Status:** Implemented  
 **Priority:** High  
 **Owner:** BOM Normalization Tool
 
@@ -10,14 +10,14 @@
 
 # 1. Background
 
-The Capacitor module already provides a complete review workflow through the Merge Workspace, allowing engineers to:
+The Capacitor module provides a complete review workflow through the **Capacitor Merge Workspace**, allowing engineers to:
 
 - Review merge candidates
 - Select BOM Action
 - Track review status
 - Synchronize decisions back to Summary
 
-In contrast, the current Resistor module only provides a hyperlink from **Resistor Summary** to **Resistor Detail**, resulting in a different user experience.
+Previously, the Resistor module only provided a hyperlink from **Resistor Summary** to **Resistor Detail**, resulting in a different user experience.
 
 To improve usability and maintain consistency across the tool, the Resistor workflow should be redesigned to match the Capacitor Merge Workspace.
 
@@ -38,7 +38,7 @@ Objectives:
 
 ---
 
-# 3. Current Workflow
+# 3. Previous Workflow
 
 ```
 Resistor Summary
@@ -72,7 +72,7 @@ Resistor Summary
 Click Target PN
         │
         ▼
-Resistor Detail Workspace
+Resistor Merge Workspace
         │
         ▼
 Select BOM ACTION
@@ -88,9 +88,9 @@ The workflow should behave exactly like the existing Capacitor Merge Workspace.
 
 # 5. Functional Design
 
-## 5.1 Convert Resistor Detail into a Workspace
+## 5.1 Convert Resistor Detail into Resistor Merge Workspace
 
-The current Resistor Detail sheet is read-only.
+The previous Resistor Detail sheet was read-only.
 
 Convert it into an interactive review workspace by adding an editable **BOM ACTION** column.
 
@@ -104,15 +104,15 @@ Convert it into an interactive review workspace by adding an editable **BOM ACTI
 
 ### Visual Style
 
-Reuse the Capacitor color scheme:
+Use one shared BOM ACTION color scheme for all component workspaces. Color represents action status, not component category:
 
 | Status | Color |
 |---------|-------|
 | 🟢 Merge | Green |
 | 🟡 Review | Yellow |
-| ⚪ Keep | Gray |
+| ⚪ Keep | Gray / White |
 
-The dropdown style, conditional formatting, and icons should be identical to the Capacitor Merge Workspace.
+The dropdown style, conditional formatting, icons, and status colors must be identical for Capacitor Merge Workspace, Resistor Merge Workspace, and future component merge workspaces.
 
 ---
 
@@ -160,7 +160,7 @@ No manual editing should be required.
 
 The hyperlink navigation should remain.
 
-Users should still be able to jump directly from Summary to the corresponding location in Resistor Detail.
+Users should still be able to jump directly from Summary to the corresponding location in Resistor Merge Workspace.
 
 Suggested clickable fields:
 

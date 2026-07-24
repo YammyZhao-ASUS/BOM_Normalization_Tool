@@ -91,9 +91,9 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             "Overview",
             "Merge Candidate",
             "Capacitor Summary",
-            "Merge Workspace",
+            "Capacitor Merge Workspace",
             "Resistor Summary",
-            "Resistor Detail",
+            "Resistor Merge Workspace",
             "Resistor Nearby Value",
             "AVL Candidate",
             "Risk Review",
@@ -109,15 +109,15 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.assertEqual(workbook["Settings"].sheet_state, "hidden")
             self.assertEqual(workbook["Merge Candidate"].freeze_panes, "A2")
             self.assertEqual(workbook["Capacitor Summary"].freeze_panes, "A2")
-            self.assertEqual(workbook["Merge Workspace"].freeze_panes, "A2")
+            self.assertEqual(workbook["Capacitor Merge Workspace"].freeze_panes, "A2")
             self.assertEqual(workbook["Resistor Summary"].freeze_panes, "A2")
-            self.assertEqual(workbook["Resistor Detail"].freeze_panes, "A2")
+            self.assertEqual(workbook["Resistor Merge Workspace"].freeze_panes, "A2")
             self.assertEqual(workbook["Resistor Nearby Value"].freeze_panes, "A2")
             merge_headers = [cell.value for cell in workbook["Merge Candidate"][1]]
             summary_headers = [cell.value for cell in workbook["Capacitor Summary"][1]]
-            detail_headers = [cell.value for cell in workbook["Merge Workspace"][1]]
+            detail_headers = [cell.value for cell in workbook["Capacitor Merge Workspace"][1]]
             resistor_summary_headers = [cell.value for cell in workbook["Resistor Summary"][1]]
-            resistor_detail_headers = [cell.value for cell in workbook["Resistor Detail"][1]]
+            resistor_detail_headers = [cell.value for cell in workbook["Resistor Merge Workspace"][1]]
             nearby_headers = [cell.value for cell in workbook["Resistor Nearby Value"][1]]
             self.assertEqual(
                 merge_headers[:9],
@@ -145,8 +145,16 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.assertTrue(workbook["Resistor Summary"].column_dimensions["H"].hidden)
             self.assertNotIn("RD Decision", resistor_summary_headers)
             self.assertFalse(self._has_data_validation(workbook["Capacitor Summary"], "H2:H1048576"))
-            self.assertTrue(self._has_data_validation(workbook["Merge Workspace"], "L2:L1048576"))
-            self.assertTrue(self._has_data_validation(workbook["Resistor Detail"], "J2:J1048576"))
+            self.assertTrue(self._has_data_validation(workbook["Capacitor Merge Workspace"], "L2:L1048576"))
+            self.assertTrue(self._has_data_validation(workbook["Resistor Merge Workspace"], "J2:J1048576"))
+            expected_action_colors = {
+                "🟢 Merge": "D9EAD3",
+                "🟡 Review": "FFF2CC",
+                "⚪ Keep": "FFFFFF",
+            }
+            self.assertEqual(self._bom_action_conditional_colors(workbook["Capacitor Merge Workspace"]), expected_action_colors)
+            self.assertEqual(self._bom_action_conditional_colors(workbook["Resistor Merge Workspace"]), expected_action_colors)
+            self.assertEqual(self._bom_action_conditional_colors(workbook["Resistor Summary"]), expected_action_colors)
             workbook.close()
 
     @staticmethod
@@ -155,6 +163,19 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             target_range in str(validation.sqref)
             for validation in worksheet.data_validations.dataValidation
         )
+
+    @staticmethod
+    def _bom_action_conditional_colors(worksheet):
+        colors = {}
+        for rules in worksheet.conditional_formatting._cf_rules.values():
+            for rule in rules:
+                formula = " ".join(rule.formula or [])
+                for action in ("🟢 Merge", "🟡 Review", "⚪ Keep"):
+                    if action not in formula:
+                        continue
+                    fill_color = rule.dxf.fill.fgColor.rgb
+                    colors[action] = fill_color[-6:] if fill_color else ""
+        return colors
 
     def test_capacitor_review_detail_expands_members_and_nested_differences(self):
         bom = pd.DataFrame(
@@ -181,7 +202,7 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             output_file = Path(temporary_directory) / "capacitor_review.xlsx"
             self.platform.write_excel_report(reports, output_file)
             workbook = load_workbook(output_file, read_only=False)
-            detail = workbook["Merge Workspace"]
+            detail = workbook["Capacitor Merge Workspace"]
             rows = [
                 [detail.cell(row_index, column).value for column in range(1, 13)]
                 for row_index in range(2, detail.max_row + 1)
@@ -266,7 +287,7 @@ class BOMIntelligencePlatformTests(unittest.TestCase):
             self.platform.write_excel_report(reports, output_file)
             workbook = load_workbook(output_file, read_only=False)
             summary = workbook["Resistor Summary"]
-            detail = workbook["Resistor Detail"]
+            detail = workbook["Resistor Merge Workspace"]
             nearby = workbook["Resistor Nearby Value"]
             summary_rows = {
                 summary.cell(row_index, 1).value: [summary.cell(row_index, column).value for column in range(1, 9)]

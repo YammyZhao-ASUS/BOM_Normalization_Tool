@@ -20,9 +20,9 @@ class ExcelReportWriter:
         ("Merge Workspace", "specification_detail"),
         ("Resistor Summary", "resistor_summary"),
         ("Resistor Detail", "resistor_detail"),
+        ("Resistor Nearby Value", "nearby_value"),
         ("AVL Candidate", "avl_candidate"),
         ("Risk Review", "risk_review"),
-        ("Resistor Nearby Value", "nearby_value"),
         ("Settings", "settings"),
     )
 
@@ -66,6 +66,7 @@ class ExcelReportWriter:
                 self._link_summary_to_detail(workbook)
                 self._link_resistor_summary_to_detail(workbook)
                 self._sync_summary_from_workspace(workbook)
+                self._sync_resistor_summary_from_workspace(workbook)
                 self._add_rd_decision_dropdowns(workbook)
                 self._build_dashboard(overview, reports, report_views)
 
@@ -199,7 +200,7 @@ class ExcelReportWriter:
         return pd.DataFrame(rows, columns=columns)
 
     def _resistor_summary_view(self, reports):
-        columns = ["Value", "PN Count", "Total Qty", "Action / Target PN", "Priority", "Reason (相似度分类)", "Detail", "Group"]
+        columns = ["Value", "PN Count", "Total Qty", "Action / Target PN", "BOM Action", "Priority", "Reason (相似度分类)", "Group"]
         rows = []
         for group in self._resistor_value_groups(reports):
             rows.append(
@@ -208,16 +209,16 @@ class ExcelReportWriter:
                     "PN Count": group["pn_count"],
                     "Total Qty": group["total_quantity"],
                     "Action / Target PN": group["target_action"],
+                    "BOM Action": "",
                     "Priority": group["priority"],
                     "Reason (相似度分类)": group["reason"],
-                    "Detail": "▶ Detail",
                     "Group": group["group_id"],
                 }
             )
         return pd.DataFrame(rows, columns=columns)
 
     def _resistor_detail_view(self, reports):
-        columns = ["Group", "Row Type", "Value", "Spec", "PN", "Qty", "Status", "Difference", "Why Listed"]
+        columns = ["Group", "Row Type", "Value", "Spec", "PN", "Qty", "Status", "Difference", "Why Listed", "BOM Action", "Merge Target"]
         rows = []
         for group in self._resistor_value_groups(reports):
             rows.append(
@@ -231,6 +232,8 @@ class ExcelReportWriter:
                     "Status": "",
                     "Difference": group["nearby_values"],
                     "Why Listed": group["reason"],
+                    "BOM Action": "",
+                    "Merge Target": "",
                 }
             )
             for spec in group["spec_groups"]:
@@ -245,6 +248,8 @@ class ExcelReportWriter:
                         "Status": "Same Spec Group",
                         "Difference": "",
                         "Why Listed": spec["why_listed"],
+                        "BOM Action": "",
+                        "Merge Target": "",
                     }
                 )
                 for part in spec["parts"]:
@@ -259,8 +264,12 @@ class ExcelReportWriter:
                             "Status": part["status"],
                             "Difference": part["difference"],
                             "Why Listed": spec["why_listed"],
+                            "BOM Action": "",
+                            "Merge Target": "",
                         }
                     )
+            for candidate in group.get("nearby_candidates", []):
+                rows.extend(self._resistor_candidate_rows(group["group_id"], candidate, columns))
             rows.append({column: "" for column in columns})
         return pd.DataFrame(rows, columns=columns)
 
@@ -410,7 +419,7 @@ class ExcelReportWriter:
         if candidates.empty:
             return []
 
-        nearby_lookup = self._nearby_values_by_resistance(reports.get("near_resistance", pd.DataFrame()))
+        nearby_lookup = self._nearby_values_by_resistance(reports.get("near_resistance", pd.DataFrame()), normalized)
         groups = []
         for value, value_group in candidates.groupby("Normalized_Value", sort=True):
             spec_groups = self._resistor_spec_groups(value_group)
@@ -430,6 +439,7 @@ class ExcelReportWriter:
                     "pn_count": len(part_numbers),
                     "total_quantity": total_quantity,
                     "nearby_values": ", ".join(candidate["label"] for candidate in nearby_candidates[:3]),
+                    "nearby_candidates": nearby_candidates[:3],
                     "target_action": classification["target_action"],
                     "priority": classification["priority"],
                     "reason": classification["reason"],
@@ -493,14 +503,15 @@ class ExcelReportWriter:
         near_candidates = [candidate for candidate in nearby_candidates if abs(candidate["difference_percent"]) <= 3]
         if near_candidates:
             candidate = near_candidates[0]
+            base_reason = (
+                f"🟠 Near Value {self._display_resistance_value(value_group.iloc[0]['Normalized_Value'])} "
+                f"➔ {self._display_resistance_value(candidate['value'])} "
+                f"({self._signed_percent(candidate['difference_percent'])})"
+            )
             return {
                 "target_action": "Review Required",
                 "priority": "★★",
-                "reason": (
-                    f"🟠 Near Value {self._display_resistance_value(value_group.iloc[0]['Normalized_Value'])} "
-                    f"➔ {self._display_resistance_value(candidate['value'])} "
-                    f"({self._signed_percent(candidate['difference_percent'])})"
-                ),
+                "reason": self._append_nearby_reason_details(base_reason, near_candidates[:3]),
             }
 
         part_groups = [part for spec in spec_groups for part in spec["parts"]]
@@ -529,10 +540,11 @@ class ExcelReportWriter:
             return "Vendor Mixed"
         return "Same Spec"
 
-    def _nearby_values_by_resistance(self, near_resistance):
+    def _nearby_values_by_resistance(self, near_resistance, normalized=None):
         nearby = {}
         if near_resistance.empty:
             return nearby
+        candidate_details = self._resistor_candidate_details_by_value(normalized)
         for _, pair in near_resistance.iterrows():
             value_a = str(pair.get("Value_A", "") or "")
             value_b = str(pair.get("Value_B", "") or "")
@@ -542,28 +554,122 @@ class ExcelReportWriter:
             if value_a and value_b:
                 value_a_to_b = -difference / (1 + difference / 100) if difference != -100 else 0
                 nearby.setdefault(value_a, []).append(
-                    {
-                        "value": value_b,
-                        "difference_percent": value_a_to_b,
-                        "quantity": quantity_b,
-                        "label": f"{self._display_resistance_value(value_b)} ({self._signed_percent(value_a_to_b)})",
-                    }
+                    self._nearby_candidate(value_b, value_a_to_b, quantity_b, candidate_details, pair.get("Part_Numbers_B", ""))
                 )
                 nearby.setdefault(value_b, []).append(
-                    {
-                        "value": value_a,
-                        "difference_percent": difference,
-                        "quantity": quantity_a,
-                        "label": f"{self._display_resistance_value(value_a)} ({self._signed_percent(difference)})",
-                    }
+                    self._nearby_candidate(value_a, difference, quantity_a, candidate_details, pair.get("Part_Numbers_A", ""))
                 )
         return {
             value: sorted(
                 [candidate for candidate in values if abs(candidate["difference_percent"]) <= 5],
-                key=lambda candidate: (-candidate["quantity"], abs(candidate["difference_percent"]), candidate["value"]),
+                key=lambda candidate: (abs(candidate["difference_percent"]), -candidate["quantity"], candidate["value"]),
             )[:3]
             for value, values in nearby.items()
         }
+
+    def _resistor_candidate_details_by_value(self, normalized):
+        if normalized is None or normalized.empty:
+            return {}
+        required_columns = {"Component_Type", "Normalized_Value", "Part_Number", "Quantity_Normalized"}
+        if not required_columns.issubset(normalized.columns):
+            return {}
+
+        candidates = normalized[
+            normalized["Component_Type"].eq("R")
+            & normalized["Normalized_Value"].fillna("").ne("")
+            & normalized["Part_Number"].fillna("").astype(str).str.strip().ne("")
+            & ~normalized.get("Is_Second_Source", pd.Series(False, index=normalized.index))
+        ].copy()
+
+        details = {}
+        for value, value_group in candidates.groupby("Normalized_Value", sort=True):
+            parts = []
+            for part in self._part_groups(value_group):
+                representative = part["representative"]
+                parts.append(
+                    {
+                        "part_number": part["part_number"],
+                        "quantity": part["quantity"],
+                        "package": str(representative.get("Package_Identity", "") or ""),
+                        "spec": self._compact_spec(representative),
+                    }
+                )
+            details[str(value)] = sorted(parts, key=lambda item: (-item["quantity"], item["part_number"]))
+        return details
+
+    def _nearby_candidate(self, value, difference_percent, quantity, candidate_details, part_numbers):
+        parts = candidate_details.get(str(value), [])
+        if not parts:
+            parts = [
+                {"part_number": part_number.strip(), "quantity": "", "package": "", "spec": ""}
+                for part_number in str(part_numbers or "").split(",")
+                if part_number.strip()
+            ]
+        total_quantity = sum(float(part.get("quantity", 0) or 0) for part in parts) if parts else float(quantity or 0)
+        package_values = []
+        for part in parts:
+            package = str(part.get("package", "") or "").strip()
+            if package and package not in package_values:
+                package_values.append(package)
+        display_value = self._display_resistance_value(value)
+        return {
+            "value": value,
+            "display_value": display_value,
+            "difference_percent": difference_percent,
+            "quantity": total_quantity or float(quantity or 0),
+            "package": self._compact_value_pair(package_values) if package_values else "",
+            "pn_count": len(parts),
+            "parts": parts,
+            "label": f"{display_value} ({self._signed_percent(difference_percent)})",
+        }
+
+    def _append_nearby_reason_details(self, base_reason, candidates):
+        detail_blocks = []
+        for candidate in candidates:
+            lines = [
+                f"Target Value : {candidate['display_value']}",
+                f"Package : {candidate.get('package', '') or '-'}",
+                f"Qty : {candidate['quantity']:g} pcs",
+                f"Difference : {self._signed_percent(candidate['difference_percent'])}",
+            ]
+            detail_blocks.append("\n".join(lines))
+        if not detail_blocks:
+            return base_reason
+        return f"{base_reason}\n" + "\n\n".join(detail_blocks)
+
+    def _resistor_candidate_rows(self, group_id, candidate, columns):
+        rows = [
+            {
+                "Group": group_id,
+                "Row Type": "Candidate",
+                "Value": candidate["display_value"],
+                "Spec": f"{candidate['pn_count']} PN  |  Total Qty : {candidate['quantity']:g} pcs\nPackage : {candidate.get('package', '') or '-'}",
+                "PN": "",
+                "Qty": candidate["quantity"],
+                "Status": "Nearby Candidate",
+                "Difference": self._signed_percent(candidate["difference_percent"]),
+                "Why Listed": "Candidate Value",
+                "BOM Action": "",
+                "Merge Target": "",
+            }
+        ]
+        for part in candidate.get("parts", []):
+            rows.append(
+                {
+                    "Group": group_id,
+                    "Row Type": "Candidate PN",
+                    "Value": candidate["display_value"],
+                    "Spec": part.get("spec", "") or part.get("package", ""),
+                    "PN": part.get("part_number", ""),
+                    "Qty": part.get("quantity", ""),
+                    "Status": "Nearby Candidate",
+                    "Difference": self._signed_percent(candidate["difference_percent"]),
+                    "Why Listed": f"Package : {part.get('package', '') or '-'}",
+                    "BOM Action": "",
+                    "Merge Target": "",
+                }
+            )
+        return rows
 
     def _part_groups(self, group):
         part_groups = []
@@ -1607,7 +1713,7 @@ class ExcelReportWriter:
         }
         headers = [cell.value for cell in summary[1]]
         try:
-            detail_column = headers.index("Detail") + 1
+            link_column = headers.index("Value") + 1
             group_column = headers.index("Group") + 1
         except ValueError:
             return
@@ -1615,13 +1721,41 @@ class ExcelReportWriter:
         for row_index in range(2, summary.max_row + 1):
             group_id = summary.cell(row_index, group_column).value
             target_row = detail_rows.get(group_id, 1)
-            cell = summary.cell(row_index, detail_column)
+            cell = summary.cell(row_index, link_column)
             cell.hyperlink = f"#'Resistor Detail'!A{target_row}"
             cell.style = "Hyperlink"
 
+    def _sync_resistor_summary_from_workspace(self, workbook):
+        """Make Resistor Summary BOM Action read from the Resistor Detail workspace."""
+        if "Resistor Summary" not in workbook or "Resistor Detail" not in workbook:
+            return
+        summary = workbook["Resistor Summary"]
+        summary_headers = [cell.value for cell in summary[1]]
+        detail_headers = [cell.value for cell in workbook["Resistor Detail"][1]]
+        try:
+            group_column = summary_headers.index("Group") + 1
+            action_column = summary_headers.index("BOM Action") + 1
+            detail_action_index = detail_headers.index("BOM Action") + 1
+            merge_target_index = detail_headers.index("Merge Target") + 1
+        except ValueError:
+            return
+        for row_index in range(2, summary.max_row + 1):
+            group_cell = summary.cell(row_index, group_column).coordinate
+            action_lookup = f"VLOOKUP(${group_cell},'Resistor Detail'!$A:$K,{detail_action_index},FALSE)"
+            target_lookup = f"VLOOKUP(${group_cell},'Resistor Detail'!$A:$K,{merge_target_index},FALSE)"
+            summary.cell(row_index, action_column).value = (
+                f'=IFERROR(IF({action_lookup}="","Pending",{action_lookup}'
+                f'&IF({target_lookup}="",""," → "&{target_lookup})),"Pending")'
+            )
+
     def _add_rd_decision_dropdowns(self, workbook):
-        action_options = "Update BOM,No Change,Investigate"
-        for sheet_name in ("Merge Workspace",):
+        action_options = "🟢 Merge,🟡 Review,⚪ Keep"
+        action_fills = {
+            "🟢 Merge": self.COLORS["low"],
+            "🟡 Review": self.COLORS["medium"],
+            "⚪ Keep": self.COLORS["white"],
+        }
+        for sheet_name in ("Merge Workspace", "Resistor Detail"):
             if sheet_name not in workbook:
                 continue
             worksheet = workbook[sheet_name]
@@ -1630,12 +1764,22 @@ class ExcelReportWriter:
                 continue
             column_letter = worksheet.cell(1, headers.index("BOM Action") + 1).column_letter
             validation = DataValidation(type="list", formula1=f'"{action_options}"', allow_blank=True)
-            validation.error = "Please choose Update BOM, No Change, or Investigate."
+            validation.error = "Please choose Merge, Review, or Keep."
             validation.errorTitle = "Invalid BOM Action"
             validation.prompt = "Select the BOM action for this merge row."
             validation.promptTitle = "BOM Action"
             worksheet.add_data_validation(validation)
             validation.add(f"{column_letter}2:{column_letter}1048576")
+            if worksheet.max_row < 2:
+                continue
+            for action, color in action_fills.items():
+                worksheet.conditional_formatting.add(
+                    f"{column_letter}2:{column_letter}{worksheet.max_row}",
+                    FormulaRule(
+                        formula=[f'${column_letter}2="{action}"'],
+                        fill=PatternFill("solid", fgColor=color),
+                    ),
+                )
 
     def _format_data_sheet(self, worksheet, dataframe, report_key):
         worksheet.sheet_view.showGridLines = False
@@ -1761,9 +1905,9 @@ class ExcelReportWriter:
             "PN Count": 10,
             "Total Qty": 10,
             "Action / Target PN": 18,
+            "BOM Action": 18,
             "Priority": 12,
-            "Reason (相似度分类)": 32,
-            "Detail": 12,
+            "Reason (相似度分类)": 36,
         }
         for header, width in widths.items():
             if header in headers:
@@ -1798,6 +1942,8 @@ class ExcelReportWriter:
             "Status": 14,
             "Difference": 18,
             "Why Listed": 18,
+            "BOM Action": 18,
+            "Merge Target": 24,
         }
         for header, width in widths.items():
             if header in headers:
@@ -1810,6 +1956,8 @@ class ExcelReportWriter:
             "Value Header": PatternFill("solid", fgColor=self.COLORS["cyan"]),
             "Spec Header": PatternFill("solid", fgColor="E7E9EC"),
             "PN": PatternFill("solid", fgColor=self.COLORS["white"]),
+            "Candidate": PatternFill("solid", fgColor=self.COLORS["low"]),
+            "Candidate PN": PatternFill("solid", fgColor=self.COLORS["white"]),
         }
         for row_index in range(2, worksheet.max_row + 1):
             row_type = worksheet.cell(row_index, row_type_column).value
@@ -1817,7 +1965,7 @@ class ExcelReportWriter:
             if fill:
                 for cell in worksheet[row_index]:
                     cell.fill = fill
-            if row_type in {"Value Header", "Spec Header"}:
+            if row_type in {"Value Header", "Spec Header", "Candidate"}:
                 for cell in worksheet[row_index]:
                     cell.font = Font(name="Aptos", size=10, bold=True, color=self.COLORS["ink"])
 
